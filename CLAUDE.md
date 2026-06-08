@@ -12,7 +12,7 @@ WXT 0.19（Chrome MV3）· React 18 · TypeScript 5.6（strict + `exactOptionalP
 - `pnpm test`（vitest）· `pnpm test:e2e`（playwright）
 
 ## 耐久铁律（违反过会出事的）
-1. **这不是 git 仓库** —— 别跑 `git log/blame` 找历史；历史在 `iteration-vault/` 和本文件，改动只在磁盘。
+1. **现在是 git 仓库了**（2026-06-08 起）—— remote `github.com/Jay-0807/fastapply`（**public**），默认分支 `main`。可以 `git log/diff`，但 git 历史从 v0.3.0 初次导入起；**v0.3.0 之前的迭代史仍在 `iteration-vault/` 和本文件**（别去 git 里找早于 2026-06-08 的历史）。改完记得 commit；public 仓库别提交任何密钥（`.env` 已 gitignore，只留 `.env.example`）。
 2. **图标一律 lucide-react，禁止 emoji**（2026-05-29 redline；options/popup/sidepanel 三个 `App.tsx` 都已用 lucide）。
 3. **`exactOptionalPropertyTypes: true`** —— 可选字段别显式赋 `undefined`，要么给值要么省略 key。
 4. **改完必须回写文档**（闭合学习回路，见文末）。
