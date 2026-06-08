@@ -1,0 +1,33 @@
+{
+  "_comment": "AutoDev Phase 8 产出：基于 rules.md 约束的 Claude Code hooks 推荐。仅供参考，不自动写入 settings.json。粘贴到 .claude/settings.json 的 hooks 字段即可启用。Windows 用 pnpm（项目指定）。",
+  "_rationale": {
+    "compile-on-src-edit": "rules.md「每个含代码 task 完成闸」第 1 条：exactOptionalPropertyTypes 下编译易踩坑，改完 src/ 立刻 tsc 反馈最快。",
+    "lint-on-src-edit": "rules.md 第 2 条：eslint --max-warnings 0；禁 emoji 图标红线也靠 lint/审查。",
+    "test-before-stop": "rules.md 第 3 条：131 测试基线不能退；停手前跑一次防回归。"
+  },
+  "hooks": {
+    "PostToolUse": [
+      {
+        "matcher": "Edit|Write",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "node -e \"const f=process.env.CLAUDE_TOOL_FILE_PATH||'';if(/[\\\\/]src[\\\\/].*\\.(ts|tsx)$/.test(f)&&!/\\.test\\.(ts|tsx)$/.test(f)){process.exit(0)}\" && pnpm compile",
+            "_note": "改动 src/ 下非测试 .ts/.tsx 后跑 tsc --noEmit。CLAUDE_TOOL_FILE_PATH 名称按你的 Claude Code 版本调整。"
+          }
+        ]
+      }
+    ],
+    "Stop": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "pnpm lint && pnpm test",
+            "_note": "停手前 lint + 全量 vitest，守住 0 warning + 131 测试基线。"
+          }
+        ]
+      }
+    ]
+  }
+}

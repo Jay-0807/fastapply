@@ -1,0 +1,37 @@
+# Dependencies
+node_modules/
+
+# Build output / framework cache
+.output/
+.wxt/
+dist/
+*.tsbuildinfo
+
+# Real env secrets (keep .env.example — it's the template)
+.env
+.env.local
+.env.*.local
+
+# Claude Code local state
+.claude/
+
+# OS / editor
+.DS_Store
+Thumbs.db
+.idea/
+.vscode/
+
+# Logs / coverage
+*.log
+npm-debug.log*
+pnpm-debug.log*
+coverage/
+
+# Scratch / temp artifacts (not part of the project source)
+_pptx_extract/
+research-vault/
+build-scanner.tmp.mjs
+*.tmp.mjs
+.dogfood-bundle.js
+src/__dogfood_entry.ts
+.u-verify-*.md

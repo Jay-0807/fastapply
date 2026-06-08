@@ -1,0 +1,66 @@
+# 由 autodev step 1.4 于 2026-06-07T17:27:57Z 生成。
+# 任何"因为没有 X 而延期 Y"的决策必须引用本文件中的对应行。
+
+probed_at: "2026-06-07T17:27:57Z"
+platform: "win32"
+project_type: "chrome-mv3-extension (WXT) — 纯前端，无后端/无数据库服务器/无容器部署"
+
+tools:
+  node:
+    available: true
+    version: "v24.15.0"
+    evidence: "node --version exit 0"
+  pnpm:
+    available: true
+    version: "9.15.0"
+    evidence: "pnpm --version exit 0 — 项目指定包管理器"
+  npm:
+    available: true
+    version: "11.12.1"
+    evidence: "npm --version exit 0"
+  bun:
+    available: false
+    evidence: "bun: command not found"
+    note: "项目用 pnpm，不需要 bun"
+  python:
+    available: true
+    version: "3.12.10"
+    evidence: "python --version exit 0"
+    note: "本项目为 TS/前端，python 不参与构建；仅备注可用"
+  uv:
+    available: false
+    evidence: "uv: command not found"
+    note: "非 python 项目，无影响"
+  git:
+    available: true
+    version: "2.54.0.windows.1"
+    in_git_repo: false
+    evidence: "git rev-parse --is-inside-work-tree exit 128 'not a git repository'"
+    note: "CLAUDE.md 耐久铁律 #1：这不是 git 仓库；历史在 iteration-vault/ 与 CLAUDE.md，改动只在磁盘。开发阶段 use_worktree 必须关闭。"
+  gh_cli:
+    available: true
+    version: "2.92.0"
+    evidence: "gh --version exit 0"
+    note: "可用但本项目自托管、无 GitHub remote，交付阶段默认不开 PR"
+  docker:
+    available: false
+    evidence: "docker: command not found"
+    note: "Chrome 扩展无容器化需求，无影响"
+  vercel_cli:
+    available: true
+    version: "54.1.0"
+    evidence: "vercel --version exit 0"
+    note: "可用但不适用——本产品是 load-unpacked 的 Chrome 扩展，不部署到 Vercel"
+  aws_cli:
+    available: false
+    evidence: "aws: command not found"
+    note: "无云后端，无影响"
+  esbuild:
+    available: true
+    via: "vite/wxt 工具链内置（require.resolve 顶层不可达，但 wxt build 使用其打包）"
+    evidence: "node require.resolve('esbuild') 顶层 not-resolvable；但 wxt 0.19 依赖 vite→esbuild"
+    note: "dogfood 自测把 field-scanner 打成 IIFE 注入实时页面需要它（见记忆 chrome-mcp-dogfood-technique）；如顶层不可达可用 pnpm exec / npx esbuild"
+
+# 结论：本项目所有真实依赖（node/pnpm/git/构建链）齐备。
+# psql/docker/aws/uv/bun 缺失均与本项目无关（纯前端扩展），不构成任何降阶理由。
+# 唯一约束：非 git 仓库 → 开发阶段不可用 worktree、不可 git log；交付阶段无 PR。

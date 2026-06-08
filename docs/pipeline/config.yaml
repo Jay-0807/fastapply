@@ -1,0 +1,44 @@
+# AutoDev 流水线配置 — ApplyForge §10 LLM 语义字段提取混合管线
+# 由 /autodev 于 2026-06-08 创建。可编辑以自定义行为。
+
+pipeline:
+  mode: auto                    # auto = 所有阶段不停顿运行
+
+# 门控：哪些阶段转换需要用户确认（PM jayyangstudy 是非技术决策者）
+# 只列出需要确认的阶段编号。未列出的 = 自动通过。
+gates: {}
+  # 全自动模式。Plan GAN (5.9) / Global GAN (7.5) 仍会执行对抗审查，
+  # 只是不在阶段间停顿等待人工审批。
+
+# 睡眠模式：全自动，Ralph Loop 保持会话存活
+sleep_mode: false
+
+ralph_loop:
+  max_iterations: 50
+  completion_promise: "AUTODEV PIPELINE COMPLETE"
+
+# 各阶段的特定配置
+phases:
+  ideation:
+    max_iterations: 3
+  product_spec:
+    # superpowers:brainstorming 的配置由该技能自身控制
+  ui_ux:
+    include_wireframes: true
+  api:
+    include_schemas: true
+  planning:
+    execution_style: subagent   # 大改动，用 subagent-driven-development
+  development:
+    use_worktree: false         # ⚠️ 本项目不是 git 仓库（耐久铁律 #1），worktree 不可用
+    branch_pattern: null        # 不适用
+  frontend:
+    stack: "wxt-react"          # WXT 0.19 (Chrome MV3) + React 18
+    ui_library: "custom"        # 自有组件 + Radix primitives；图标一律 lucide-react（禁 emoji）
+    css: "tailwind"
+  delivery:
+    default_action: keep        # ⚠️ 非 git 仓库，无 merge/PR；改动留在磁盘（CLAUDE.md 约定）
+
+# 部署配置
+deployment:
+  auto_deploy: false            # Chrome 扩展 load-unpacked，无自动部署；交付 = pnpm build 产物

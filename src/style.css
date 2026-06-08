@@ -1,0 +1,55 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+@layer base {
+  :root {
+    --background: 0 0% 100%;
+    --foreground: 222.2 84% 4.9%;
+    --muted: 210 40% 96.1%;
+    --muted-foreground: 215.4 16.3% 46.9%;
+    --border: 214.3 31.8% 91.4%;
+    --primary: 15 60% 58%; /* Anthropic-ish orange */
+    --primary-foreground: 0 0% 100%;
+  }
+  @media (prefers-color-scheme: dark) {
+    :root {
+      --background: 222.2 84% 4.9%;
+      --foreground: 210 40% 98%;
+      --muted: 217.2 32.6% 17.5%;
+      --muted-foreground: 215 20.2% 65.1%;
+      --border: 217.2 32.6% 17.5%;
+    }
+  }
+
+  /* The whole app uses the CSS variables above as its color tokens. The
+     browser's user-agent stylesheet otherwise leaves input/select/textarea
+     with white backgrounds, which becomes white-on-white text in dark mode.
+     Setting them here saves every form control from having to remember
+     `bg-background text-foreground`. */
+  body {
+    background-color: hsl(var(--background));
+    color: hsl(var(--foreground));
+  }
+  input, select, textarea {
+    background-color: hsl(var(--background));
+    color: hsl(var(--foreground));
+    color-scheme: light dark;
+  }
+  input::placeholder, textarea::placeholder {
+    color: hsl(var(--muted-foreground));
+  }
+}
+
+@layer utilities {
+  .bg-background { background-color: hsl(var(--background)); }
+  .text-foreground { color: hsl(var(--foreground)); }
+  .bg-muted { background-color: hsl(var(--muted)); }
+  .text-muted-foreground { color: hsl(var(--muted-foreground)); }
+  .border-border { border-color: hsl(var(--border)); }
+  .bg-primary { background-color: hsl(var(--primary)); }
+  .text-primary { color: hsl(var(--primary)); }
+  .text-primary-foreground { color: hsl(var(--primary-foreground)); }
+  .bg-primary\/5 { background-color: hsl(var(--primary) / 0.05); }
+  .border-primary { border-color: hsl(var(--primary)); }
+}

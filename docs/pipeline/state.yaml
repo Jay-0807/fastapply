@@ -1,0 +1,26 @@
+topic: "ApplyForge §10 旗舰架构：字段识别 → LLM 语义提取混合管线（打标 + 蒸馏 + LLM 提取 + DOM 回填校验 + 缓存，feature flag 后并行路径 + dogfood recall 回归基准）"
+topic_slug: "llm-semantic-field-extraction"
+status: completed
+current_phase: 8
+paused_at_gate: null
+started_at: "2026-06-07T17:27:57Z"
+completed_at: "2026-06-07T21:19:32Z"
+source_prd: "docs/PRD.md §10（提案 → 实现，V0.3.0 已交付落地路径 1-2 步）"
+scope_decision: "PM 2026-06-08 选定：§10 完整混合管线（落地路径 1-2 步 + 为第 3 步主路径化铺架构）"
+phases:
+  1: { name: ideation, status: completed, started_at: "2026-06-07T17:30:00Z", completed_at: "2026-06-07T17:34:00Z", output: "docs/plans/2026-06-08-llm-semantic-field-extraction-ideation.md", error: null, retries: 0 }
+  2: { name: product-spec, status: completed, started_at: "2026-06-07T19:39:57Z", completed_at: "2026-06-07T19:51:21Z", output: "docs/plans/2026-06-08-llm-semantic-field-extraction-design.md (+ -oss-scan.md)", error: null, retries: 0 }
+  3: { name: ui-ux, status: completed, started_at: "2026-06-07T19:51:21Z", completed_at: "2026-06-07T19:55:57Z", output: "docs/plans/2026-06-08-llm-semantic-field-extraction-ui.md", error: null, retries: 0 }
+  4: { name: api, status: completed, started_at: "2026-06-07T19:55:57Z", completed_at: "2026-06-07T19:58:26Z", output: "docs/plans/2026-06-08-llm-semantic-field-extraction-api.md", error: null, retries: 0 }
+  5: { name: planning, status: completed, started_at: "2026-06-07T19:58:26Z", completed_at: "2026-06-07T20:12:54Z", output: "docs/plans/2026-06-08-llm-semantic-field-extraction-plan.md (+index/rules)", error: null, retries: 0, plan_review: { verdict: PASS, iterations: 2, scores: { req_coverage: 9, tech_soundness: 7, task_exec: 8, risk_id: 7 } } }
+  6: { name: development, status: completed, started_at: "2026-06-07T20:12:54Z", completed_at: "2026-06-07T21:09:21Z", output: "src/lib/fields/semantic/* (13 files) + 9 integration edits", error: null, retries: 0, code_review: { verdict: PASS, iterations: 2, bugs_found_and_fixed: 4 }, ui_review: "static_pass (runtime skipped — extension UI not MCP-drivable)" }
+  7: { name: verification, status: completed, started_at: "2026-06-07T21:09:21Z", completed_at: "2026-06-07T21:13:44Z", output: "docs/pipeline/verification-report.md + global-review.md", error: null, retries: 0, global_review: { verdict: PASS, scores: { req_align: 9, arch_consistency: 9, e2e: 8, doc_code: 9 }, iterations: 1 } }
+  8: { name: delivery, status: completed, started_at: "2026-06-07T21:13:44Z", completed_at: "2026-06-07T21:19:32Z", output: "build 2.93MB + 文档回写 3 处（PRD/CLAUDE.md/自动记忆）+ iteration-vault + recommended-hooks.json", error: null, retries: 0, note: "非 git 仓库 → 无 merge/PR（default_action: keep）；Chrome 扩展 → 无自动部署（交付=build 产物 + load-unpacked）" }
+gate_history:
+  - { phase: 1, auto_approved: true, at: "2026-06-07T17:34:00Z" }
+  - { phase: 2, auto_approved: true, at: "2026-06-07T19:51:21Z" }  # gates:{} 全自动；Plan/Global GAN 仍执行
+  - { phase: 3, auto_approved: true, at: "2026-06-07T19:55:57Z" }
+  - { phase: 4, auto_approved: true, at: "2026-06-07T19:58:26Z" }
+  - { phase: 5, auto_approved: true, at: "2026-06-07T20:12:54Z", plan_gan: PASS }
+  - { phase: 6, auto_approved: true, at: "2026-06-07T21:09:21Z", code_gan: PASS }
+  - { phase: 7, auto_approved: true, at: "2026-06-07T21:13:44Z", global_gan: PASS }
