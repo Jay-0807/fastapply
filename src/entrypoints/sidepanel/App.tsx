@@ -306,6 +306,36 @@ export function SidePanelApp() {
     await enterDraftWithFields(detected);
   };
 
+  // V0.3.0: re-scan the CURRENT page in place (no submit). Needed when the first scan ran before
+  // the master password was unlocked — the LLM pass then fell back to heuristic — or after switching
+  // scanMode in Options. Keeps project + event, resets per-page transient state, re-scans, re-enters
+  // the draft step. (Closes the V2.7-deferred "draft-step re-scan" gap.)
+  const rescanCurrentPage = async () => {
+    if (!projectId || !eventDraft?.id) {
+      throw new Error('缺少项目或活动信息，请回到第 1 步重新开始。');
+    }
+    const [tab] = await chrome.tabs.query({ active: true, currentWindow: true });
+    if (!tab?.id) {
+      throw new Error('没找到激活的浏览器标签，请确认表单页还在前台。');
+    }
+    const result = await scanCurrentTab(tab.id);
+    const detected = result.fields;
+    if (detected.length === 0) {
+      toast.warning('本页没扫到字段', '确认表单页在前台、已加载完成后再试一次。');
+      return;
+    }
+    setStreamingDrafts({});
+    setDraftErrors({});
+    setFieldState({});
+    setBatchProgress(null);
+    setFillStatus({});
+    setLockedFields([]);
+    setAssetMatches({});
+    setProjectAssets([]);
+    setScanMeta(result.meta);
+    await enterDraftWithFields(detected);
+  };
+
   // ----- Streaming subscriber -----
   useEffect(() => {
     const listener = (msg: { kind?: string; streamId?: string; token?: string; text?: string; ragRefs?: { chunkIds: string[]; similarities: number[] }; message?: string }) => {
@@ -750,6 +780,7 @@ export function SidePanelApp() {
             onUpdate={updateFinal}
             onFillPage={fillPage}
             onMarkSubmitted={markSubmitted}
+            onRescan={rescanCurrentPage}
           />
         </>
       )}
@@ -1100,6 +1131,8 @@ function DraftWorkspace(props: {
   onMarkSubmitted: () => Promise<void>;
   /** V0.3.0: scan recall / fallback metadata for the meta bar. */
   scanMeta: ScanResultMeta | null;
+  /** V0.3.0: re-scan the current page in place (e.g. after unlocking, to retry the LLM pass). */
+  onRescan: () => Promise<void>;
 }) {
   const { fields, qaPairs, streamingDrafts, draftErrors, fieldState, batchProgress, fillStatus, llmConfigs, activeConfigId, generatedCount, assetMatches, projectAssets, onChangeAssetMatch } = props;
   const isGenerating = !!batchProgress;
@@ -1122,6 +1155,18 @@ function DraftWorkspace(props: {
         </button>
       </header>
       <ScanMetaBar meta={props.scanMeta} />
+      <AsyncButton
+        onClick={props.onRescan}
+        label="重新扫描本页"
+        icon={<RefreshCw size={14} />}
+        loadingLabel="重新扫描中…"
+        successLabel="已重新扫描"
+        errorPrefix="重新扫描失败"
+        variant="ghost"
+        size="sm"
+        timeoutMs={180_000}
+        className="self-start border border-border"
+      />
       {pickerOpen && (
         <div className="rounded-md border border-border p-3 bg-muted/20 flex flex-col gap-2">
           <span className="text-xs text-muted-foreground">本次报名使用哪个 AI 配置？（仅本会话有效）</span>
