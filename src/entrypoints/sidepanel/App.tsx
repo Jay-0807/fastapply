@@ -758,6 +758,15 @@ export function SidePanelApp() {
           {lockedFields.length > 0 && (
             <LockedFieldsCard count={lockedFields.length} onUnlocked={retryLockedFields} />
           )}
+          {lockedFields.length === 0 && scanMeta?.llmFallback && /lock|unlock|master/i.test(scanMeta.llmError ?? '') && (
+            <LockedFieldsCard
+              count={0}
+              onUnlocked={() => rescanCurrentPage()}
+              title="解锁后才能用 LLM 扫描"
+              description="混合 / 纯 LLM 扫描要用解密的 API key（需主密码）。当前会话未解锁，已退回启发式结果。输入主密码解锁并重新扫描本页。"
+              buttonLabel="解锁并重新扫描"
+            />
+          )}
           <DraftWorkspace
             fields={fields}
             scanMeta={scanMeta}
@@ -838,7 +847,20 @@ function ScanMetaBar({ meta }: { meta: ScanResultMeta | null }) {
 // Inline master-password card. Appears whenever any draft generation fails with
 // a "Settings locked" / "unlock" message — saves the user from having to leave
 // the side panel, go to Options, save settings, and come back.
-function LockedFieldsCard({ count, onUnlocked }: { count: number; onUnlocked: () => void }) {
+function LockedFieldsCard({
+  count,
+  onUnlocked,
+  title = '需要解锁',
+  description,
+  buttonLabel = '解锁并重试',
+}: {
+  count: number;
+  /** May be async (e.g. unlock → re-scan); the button stays "解锁中…" until it resolves. */
+  onUnlocked: () => void | Promise<void>;
+  title?: string;
+  description?: string;
+  buttonLabel?: string;
+}) {
   const [password, setPassword] = useState('');
   const [busy, setBusy] = useState(false);
   const [err, setErr] = useState<string | null>(null);
@@ -853,7 +875,7 @@ function LockedFieldsCard({ count, onUnlocked }: { count: number; onUnlocked: ()
     try {
       await sendMessage({ type: 'settings.unlock', payload: { masterPassword: password } });
       setPassword('');
-      onUnlocked();
+      await onUnlocked();
     } catch (e) {
       setErr(e instanceof Error ? e.message : String(e));
     } finally {
@@ -863,10 +885,9 @@ function LockedFieldsCard({ count, onUnlocked }: { count: number; onUnlocked: ()
 
   return (
     <div className="rounded-md border border-primary/60 bg-primary/10 p-3 flex flex-col gap-2">
-      <p className="text-sm font-medium flex items-center gap-1.5"><Lock className="w-3.5 h-3.5" />需要解锁</p>
+      <p className="text-sm font-medium flex items-center gap-1.5"><Lock className="w-3.5 h-3.5" />{title}</p>
       <p className="text-xs text-muted-foreground">
-        Chrome 重启了后台 worker，加密的 API key 暂时不能访问。
-        输入主密码即可继续生成 {count} 个字段的草稿。
+        {description ?? `Chrome 重启了后台 worker，加密的 API key 暂时不能访问。输入主密码即可继续生成 ${count} 个字段的草稿。`}
       </p>
       <input
         type="password"
@@ -883,7 +904,7 @@ function LockedFieldsCard({ count, onUnlocked }: { count: number; onUnlocked: ()
         disabled={busy}
         className="self-start px-4 py-1.5 bg-primary text-primary-foreground rounded text-sm disabled:opacity-50"
       >
-        {busy ? '解锁中...' : '解锁并重试'}
+        {busy ? '解锁中...' : buttonLabel}
       </button>
     </div>
   );

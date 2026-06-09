@@ -27,6 +27,11 @@ npm-debug.log*
 pnpm-debug.log*
 coverage/
 
+# Playwright MCP captures + scratch test screenshots (may contain personal test data)
+.playwright-mcp/
+/v4-top.png
+/v4shot.png
+
 # Scratch / temp artifacts (not part of the project source)
 _pptx_extract/
 research-vault/
