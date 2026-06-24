@@ -9,7 +9,7 @@
 
 import Anthropic from '@anthropic-ai/sdk';
 import OpenAI from 'openai';
-import type { DetectedField, EventContext, Chunk, LLMProviderType } from '@/lib/db/types';
+import type { DetectedField, EventContext, Chunk, LLMProviderType, ProjectFacts } from '@/lib/db/types';
 import { SYSTEM_PROMPT, buildUserPrompt, buildRetryPrompt, buildBatchPrompt, parseBatchResponse } from './prompts';
 
 /**
@@ -67,6 +67,8 @@ export interface GenerateDraftArgs {
   model: ClaudeModel;
   /** UX iteration 2026-06-01: optional user steering for a regenerate; threaded into the prompt. */
   refinement?: string;
+  /** V0.4.0 knowledge graph: the project's curated structured facts (high-priority context). */
+  projectFacts?: ProjectFacts;
   /**
    * Model to fall back to on primary failure. Defaults to
    * `DEFAULT_FALLBACK_MODEL` (only used when provider='anthropic'; for
@@ -110,6 +112,7 @@ export async function generateDraft(args: GenerateDraftArgs): Promise<GenerateDr
     projectChunks: args.projectChunks,
     qaChunks: args.qaChunks,
     ...(args.refinement ? { refinement: args.refinement } : {}),
+    ...(args.projectFacts ? { projectFacts: args.projectFacts } : {}),
   });
 
   const primary = provider === 'anthropic' ? normalizeModelId(args.model) : args.model;
@@ -219,6 +222,8 @@ export interface GenerateBatchDraftsArgs {
   qaChunks: Chunk[];
   model: ClaudeModel;
   fallbackModel?: string | null;
+  /** V0.4.0 knowledge graph: the project's curated structured facts (high-priority context). */
+  projectFacts?: ProjectFacts;
 }
 
 export interface GenerateBatchDraftsResult {
@@ -250,6 +255,7 @@ export async function generateBatchDrafts(args: GenerateBatchDraftsArgs): Promis
     event: args.event,
     projectChunks: args.projectChunks,
     qaChunks: args.qaChunks,
+    ...(args.projectFacts ? { projectFacts: args.projectFacts } : {}),
   });
 
   const primary = provider === 'anthropic' ? normalizeModelId(args.model) : args.model;

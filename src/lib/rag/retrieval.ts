@@ -8,7 +8,8 @@
 // rather than cosine similarity.
 
 import { db } from '@/lib/db/schema';
-import type { Chunk, ChunkSourceType } from '@/lib/db/types';
+import type { Chunk, ChunkSourceType, EventContext } from '@/lib/db/types';
+import { scoreEventSimilarity } from '@/lib/graph/event-similarity';
 
 export interface RetrievalResult {
   chunk: Chunk;
@@ -90,6 +91,92 @@ export async function retrieveHybrid(args: {
     sourceType: 'qa',
   });
   return { documentResults, qaResults };
+}
+
+// ===========================================================================
+// V0.4.0 — graph-aware retrieval
+// ---------------------------------------------------------------------------
+// The fix for "调取类似赛事的历史答案 doesn't work". `retrieveHybrid` ranks QA
+// purely by keyword overlap with the field label, blind to WHICH event each
+// past answer came from. This re-ranks the QA candidates by blending that
+// keyword score with how SIMILAR the past answer's event is to the event the
+// user is applying to now (theme / organizer / type / location).
+//
+// Non-regression guarantee (load-bearing invariant #3): keyword stays the
+// dominant term (0.7 vs 0.3), so this can only re-order — never demote a
+// keyword-relevant answer below an irrelevant one — and when the current event
+// has no usable metadata, sim≈0 and the ordering collapses back to the keyword
+// baseline. Document retrieval is byte-for-byte the same as retrieveHybrid.
+// ===========================================================================
+
+/** QA re-rank weights. Keyword dominates; event similarity breaks ties + lifts same-kind events. */
+export const QA_KEYWORD_WEIGHT = 0.7;
+export const QA_EVENT_WEIGHT = 0.3;
+
+export async function retrieveGraphAware(args: {
+  projectId: string;
+  currentEvent: EventContext;
+  query: string;
+  topKDocs?: number;
+  topKQA?: number;
+}): Promise<{ documentResults: RetrievalResult[]; qaResults: RetrievalResult[] }> {
+  // Documents: identical to the keyword baseline — facts injection happens at
+  // prompt-build time, not here.
+  const documentResults = await retrieve({
+    projectId: args.projectId,
+    query: args.query,
+    sourceType: 'document',
+    topK: args.topKDocs ?? DEFAULT_TOPK_DOCS,
+  });
+
+  // QA: score ALL candidates by keyword first (no topK cap yet), then re-rank by
+  // event similarity, THEN cap.
+  const qaScored = await retrieve({
+    projectId: args.projectId,
+    query: args.query,
+    sourceType: 'qa',
+  });
+
+  const qaResults = await rerankByEventSimilarity(qaScored, args.currentEvent);
+  return { documentResults, qaResults: qaResults.slice(0, args.topKQA ?? DEFAULT_TOPK_QA) };
+}
+
+/**
+ * Re-rank keyword-scored QA chunks by event similarity. Resolves each chunk's
+ * source event via its qaRecord (sourceId → qaRecord.eventContextId), so it
+ * works for chunks seeded before V0.4.0 too (they just resolve via the record).
+ * A chunk whose event can't be resolved keeps sim=0 (pure keyword fallback).
+ */
+async function rerankByEventSimilarity(
+  candidates: RetrievalResult[],
+  currentEvent: EventContext,
+): Promise<RetrievalResult[]> {
+  if (!candidates.length) return candidates;
+
+  // sourceId of a QA chunk is the qaRecord id. Batch-resolve record → eventId → event.
+  const recordIds = [...new Set(candidates.map((r) => r.chunk.sourceId))];
+  const records = await db.qaRecords.bulkGet(recordIds);
+  const recordToEventId = new Map<string, string>();
+  for (const rec of records) {
+    if (rec) recordToEventId.set(rec.id, rec.eventContextId);
+  }
+  const eventIds = [...new Set([...recordToEventId.values()])];
+  const events = await db.eventContexts.bulkGet(eventIds);
+  const eventById = new Map<string, EventContext>();
+  for (const e of events) {
+    if (e) eventById.set(e.id, e);
+  }
+
+  const reranked = candidates.map((r) => {
+    const eventId = recordToEventId.get(r.chunk.sourceId);
+    const pastEvent = eventId ? eventById.get(eventId) : undefined;
+    const sim = pastEvent ? scoreEventSimilarity(currentEvent, pastEvent).score : 0;
+    const combined = QA_KEYWORD_WEIGHT * r.similarity + QA_EVENT_WEIGHT * sim;
+    return { chunk: r.chunk, similarity: combined };
+  });
+
+  reranked.sort((a, b) => b.similarity - a.similarity);
+  return reranked;
 }
 
 // ----- helpers -----

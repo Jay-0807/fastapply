@@ -11,7 +11,10 @@ import type {
   QARecord,
   AppSettings,
   ProjectAsset,
+  Person,
 } from './types';
+// Pure derivers reused to backfill KG matching hints onto existing rows.
+import { deriveEventType, deriveTopicTags } from '@/lib/graph/event-similarity';
 
 export class ApplyForgeDB extends Dexie {
   projects!: Table<Project, string>;
@@ -21,6 +24,8 @@ export class ApplyForgeDB extends Dexie {
   qaRecords!: Table<QARecord, string>;
   appSettings!: Table<AppSettings, 'singleton'>;
   projectAssets!: Table<ProjectAsset, string>;
+  // V0.4.0 knowledge graph — reusable participant profiles.
+  persons!: Table<Person, string>;
 
   constructor() {
     super('applyforge_v1');
@@ -131,6 +136,41 @@ export class ApplyForgeDB extends Dexie {
       if (!settings) return; // fresh install — onboarding populates everything
       if (settings.scanMode) return; // already set (clean v6 install) — don't override
       await tx.table('appSettings').update('singleton', { scanMode: 'heuristic' });
+    });
+    // v7 — V0.4.0 structured knowledge graph.
+    // Adds the `persons` table and the graph fields on existing rows. The upgrade
+    // BACKFILLS every existing project / event / qaRecord with safe defaults so
+    // NO existing data is lost and old installs behave exactly as before until
+    // the user starts using the new features (load-bearing invariant #1).
+    //   - persons:        new table (displayName/createdAt/updatedAt indexed)
+    //   - eventContexts:  + eventType index (for similarity pre-filter)
+    //   - qaRecords:      + *personIds multiEntry index ("events this person did")
+    // projects' indices are unchanged (facts/memberIds queried in-memory), so the
+    // store string isn't redefined — Dexie carries it forward.
+    this.version(7).stores({
+      persons: 'id, displayName, createdAt, updatedAt',
+      eventContexts: 'id, name, eventType, createdAt',
+      qaRecords: 'id, projectId, eventContextId, status, submittedAt, createdAt, *personIds',
+    }).upgrade(async (tx) => {
+      // Idempotent backfill — only set a field when it's missing, so re-running
+      // (or a partially-migrated DB) never clobbers user data.
+      await tx.table('projects').toCollection().modify((p: Partial<Project>) => {
+        if (p.facts === undefined) p.facts = {};
+        if (p.memberIds === undefined) p.memberIds = [];
+      });
+      await tx.table('eventContexts').toCollection().modify((e: Partial<EventContext>) => {
+        // Best-effort matching hints derived from the free-text the row already
+        // has. Deterministic + non-authoritative, so deriving old rows is safe.
+        if (e.eventType === undefined) {
+          e.eventType = deriveEventType({ name: e.name ?? '', theme: e.theme ?? '', organizer: e.organizer ?? '' });
+        }
+        if (e.topicTags === undefined) {
+          e.topicTags = deriveTopicTags({ name: e.name ?? '', theme: e.theme ?? '' });
+        }
+      });
+      await tx.table('qaRecords').toCollection().modify((q: Partial<QARecord>) => {
+        if (q.personIds === undefined) q.personIds = [];
+      });
     });
   }
 }

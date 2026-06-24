@@ -2,7 +2,7 @@
 // 3-step UX: confirm event context → review/edit AI drafts → submit & persist.
 // See 04-ui-context.md for full UX spec.
 
-import { useEffect, useMemo, useState } from 'react';
+import { useEffect, useMemo, useState, type ReactNode } from 'react';
 import { useLiveQuery } from 'dexie-react-hooks';
 import { v4 as uuid } from 'uuid';
 import {
@@ -23,12 +23,15 @@ import {
   Info,
   BarChart2,
   Sparkles,
+  Users,
+  UserCheck,
 } from 'lucide-react';
 import { db } from '@/lib/db/schema';
 import type {
   DetectedField,
   EventContext,
   Project,
+  Person,
   QAPair,
   QARecord,
   UserAction,
@@ -38,6 +41,7 @@ import { useToast } from '@/components/ErrorToast';
 import { FieldExplainer } from '@/components/FieldExplainer';
 import { useTabSessionState } from '@/lib/state/session-state';
 import type { LLMConfig } from '@/lib/db/types';
+import type { PersonalFillResolution } from '@/lib/graph/person-fields';
 import type { ScanResult, ScanResultMeta } from '@/lib/fields/semantic/types';
 
 type Step = 'project' | 'context' | 'draft' | 'submitted';
@@ -53,6 +57,13 @@ export function SidePanelApp() {
   // defaultValue for one tick before async-hydrating from storage.
   const [step, setStep] = useTabSessionState<Step>('sidepanel.step', 'project');
   const [projectId, setProjectId] = useTabSessionState<string | null>('sidepanel.projectId', null);
+  // V0.4.0 knowledge graph: which people are applying with this project. Their
+  // stored personal info is auto-filled into matching personal fields, and the
+  // ids are recorded on the QARecord (the Person↔Event edge). primaryPerson is
+  // the preferred source when a personal field could come from any of them.
+  const persons = useLiveQuery(() => db.persons.orderBy('createdAt').reverse().toArray(), []) ?? [];
+  const [selectedPersonIds, setSelectedPersonIds] = useTabSessionState<string[]>('sidepanel.personIds', []);
+  const [primaryPersonId, setPrimaryPersonId] = useTabSessionState<string | null>('sidepanel.primaryPersonId', null);
   const [eventDraft, setEventDraft] = useTabSessionState<Partial<EventContext> | null>('sidepanel.eventDraft', null);
   const [fields, setFields] = useTabSessionState<DetectedField[]>('sidepanel.fields', []);
   // V0.3.0: recall / fallback metadata from the last scan (drives the recall bar + notices).
@@ -120,6 +131,20 @@ export function SidePanelApp() {
   useEffect(() => {
     if (projects.length && !projectId) setProjectId(projects[0]!.id);
   }, [projects, projectId]);
+
+  // V0.4.0 KG: keep primaryPersonId consistent with the selection — auto-pick
+  // the first selected person as primary, and clear/re-point it if the current
+  // primary gets deselected.
+  const togglePerson = (id: string) => {
+    setSelectedPersonIds((prev) => (prev.includes(id) ? prev.filter((x) => x !== id) : [...prev, id]));
+  };
+  useEffect(() => {
+    if (primaryPersonId && !selectedPersonIds.includes(primaryPersonId)) {
+      setPrimaryPersonId(selectedPersonIds[0] ?? null);
+    } else if (!primaryPersonId && selectedPersonIds.length) {
+      setPrimaryPersonId(selectedPersonIds[0]!);
+    }
+  }, [selectedPersonIds, primaryPersonId]);
 
   const goToContextStep = async () => {
     const [tab] = await chrome.tabs.query({ active: true, currentWindow: true });
@@ -672,6 +697,38 @@ export function SidePanelApp() {
         }
       }
     }
+    // V0.4.0 KG: auto-fill personal fields (姓名/手机/邮箱…) from the selected
+    // people's STORED profiles — real values only, never AI-generated. Merge
+    // into the fill map AND record into qaPairs so the QARecord captures what
+    // was actually filled. OTP/captcha is never resolved (see person-fields.ts).
+    let personalFills: PersonalFillResolution[] = [];
+    if (selectedPersonIds.length) {
+      personalFills = (await sendMessage({
+        type: 'persons.resolveFills',
+        payload: {
+          fields,
+          personIds: selectedPersonIds,
+          ...(primaryPersonId ? { primaryPersonId } : {}),
+        },
+      })) as PersonalFillResolution[];
+      for (const pf of personalFills) {
+        const f = fields.find((x) => x.fieldId === pf.fieldId);
+        if (!f) continue;
+        fillMap[f.domSelector] = pf.value;
+        selectorToField[f.domSelector] = f.fieldId;
+      }
+      if (personalFills.length) {
+        setQaPairs((prev) => {
+          const next = { ...prev };
+          for (const pf of personalFills) {
+            const cur = next[pf.fieldId];
+            if (cur) next[pf.fieldId] = { ...cur, finalValue: pf.value, userAction: 'accepted' };
+          }
+          return next;
+        });
+      }
+    }
+
     // No more local try/catch + alert here — AsyncButton at the call site
     // catches the thrown error and surfaces it via toast. Single error path.
     const result = (await sendMessage({
@@ -694,6 +751,9 @@ export function SidePanelApp() {
     } else if (result.filledCount > 0) {
       toast.success('填入完成', `${result.filledCount} 个字段已填入页面。`);
     }
+    if (personalFills.length) {
+      toast.info('已自动回填个人信息', `${personalFills.length} 个联系人字段用已保存的本人资料回填，请提交前核对。`);
+    }
   };
 
   const markSubmitted = async () => {
@@ -705,6 +765,9 @@ export function SidePanelApp() {
       id: uuid(),
       projectId,
       eventContextId: eventDraft.id,
+      // V0.4.0 KG: record which people applied, so a similar future event can
+      // pull "what did 张三 fill for 联系电话 last time".
+      personIds: selectedPersonIds,
       status: 'in_progress',
       qaPairs: Object.values(qaPairs),
       markdownPath: null,
@@ -742,7 +805,15 @@ export function SidePanelApp() {
           selected={projectId}
           onSelect={setProjectId}
           onNext={goToContextStep}
-        />
+        >
+          <PersonPicker
+            persons={persons}
+            selectedIds={selectedPersonIds}
+            primaryId={primaryPersonId}
+            onToggle={togglePerson}
+            onSetPrimary={setPrimaryPersonId}
+          />
+        </ProjectPicker>
       )}
 
       {step === 'context' && eventDraft && (
@@ -956,13 +1027,15 @@ function StepIndicator({ step }: { step: Step }) {
   return <span className="text-xs text-muted-foreground">步骤 {stepNum + 1} / 4</span>;
 }
 
-function ProjectPicker({ projects, selected, onSelect, onNext }: {
+function ProjectPicker({ projects, selected, onSelect, onNext, children }: {
   projects: Project[];
   selected: string | null;
   onSelect: (id: string) => void;
   // Async now: AsyncButton needs a Promise-returning handler so it can show
   // "detecting page..." while the chrome.tabs.query + sendMessage runs.
   onNext: () => Promise<void>;
+  /** V0.4.0 KG: slot for the PersonPicker, rendered between the project select and the Next button. */
+  children?: ReactNode;
 }) {
   if (!projects.length) {
     return (
@@ -986,6 +1059,7 @@ function ProjectPicker({ projects, selected, onSelect, onNext }: {
           <option key={p.id} value={p.id}>{p.name}</option>
         ))}
       </select>
+      {children}
       <AsyncButton
         onClick={onNext}
         label="下一步 →"
@@ -996,6 +1070,66 @@ function ProjectPicker({ projects, selected, onSelect, onNext }: {
         disabled={!selected}
         size="lg"
       />
+    </div>
+  );
+}
+
+// V0.4.0 knowledge graph — pick which saved people are applying with this
+// project. Their stored personal info (姓名/手机/邮箱…) is auto-filled into
+// matching personal fields at "一键填入" time; the "主" person is preferred when
+// a field could come from any of them. Empty selection = nothing auto-filled
+// (exactly the old behaviour — personal fields stay "请你自己填").
+function PersonPicker({ persons, selectedIds, primaryId, onToggle, onSetPrimary }: {
+  persons: Person[];
+  selectedIds: string[];
+  primaryId: string | null;
+  onToggle: (id: string) => void;
+  onSetPrimary: (id: string) => void;
+}) {
+  return (
+    <div className="flex flex-col gap-2 rounded-md border border-border p-3">
+      <div className="flex items-center justify-between">
+        <span className="text-sm font-medium inline-flex items-center gap-1.5">
+          <Users className="w-3.5 h-3.5" />本次参与的人员（可选）
+        </span>
+        <button onClick={() => chrome.runtime.openOptionsPage()} className="text-xs text-primary underline">
+          管理人员档案
+        </button>
+      </div>
+      {persons.length === 0 ? (
+        <p className="text-xs text-muted-foreground">
+          还没有人员档案。在 设置 · 人员档案 里把常用联系人存一次，之后报名表里的姓名/手机/邮箱等会自动回填（仍需你提交前核对）。
+        </p>
+      ) : (
+        <>
+          <p className="text-xs text-muted-foreground">
+            勾选的人，其已保存的真实联系信息会在填表时自动回填到对应字段（AI 不代写个人信息）。
+          </p>
+          <ul className="flex flex-col gap-1">
+            {persons.map((p) => {
+              const checked = selectedIds.includes(p.id);
+              const isPrimary = primaryId === p.id;
+              return (
+                <li key={p.id} className="flex items-center gap-2 text-sm">
+                  <label className="flex items-center gap-2 flex-1 cursor-pointer">
+                    <input type="checkbox" checked={checked} onChange={() => onToggle(p.id)} />
+                    <span>{p.displayName}{p.role ? <span className="text-muted-foreground"> · {p.role}</span> : null}</span>
+                  </label>
+                  {checked && (
+                    <button
+                      onClick={() => onSetPrimary(p.id)}
+                      className={`text-xs px-1.5 py-0.5 rounded inline-flex items-center gap-1 ${isPrimary ? 'bg-primary text-primary-foreground' : 'text-muted-foreground hover:bg-muted'}`}
+                      title="设为主联系人（优先用 TA 的信息）"
+                    >
+                      <UserCheck className="w-3 h-3" />{isPrimary ? '主联系人' : '设为主'}
+                    </button>
+                  )}
+                </li>
+              );
+            })}
+          </ul>
+        </>
+      )}
     </div>
   );
 }
@@ -1419,14 +1553,24 @@ function FieldCard({ index, field, qa, streaming, error, state, fillStatus, asse
         <p className="inline-flex items-center gap-1 text-[11px] text-muted-foreground"><MessageCircle className="w-3 h-3" />{field.constraints.helperText}</p>
       )}
 
-      {/* G5: sensitive field — AI doesn't draft it; the user fills it. */}
+      {/* G5 + V0.4.0 KG: sensitive field — AI never drafts it. Personal fields can
+          be auto-filled from a saved Person profile (real values, not AI); when
+          that happened (finalValue present) we show a green "已回填，请核对" note
+          instead of the "请你自己填" prompt. OTP is never auto-filled. */}
       {isSensitive && (
-        <p className="text-[12px] text-amber-300 bg-amber-500/10 rounded px-2 py-1.5 inline-flex items-center gap-1.5">
-          <Lock className="w-3.5 h-3.5" />
-          {field.constraints.sensitiveKind === 'otp'
-            ? '验证码请直接在网页里填，AI 不代写。'
-            : '个人 / 联系人信息，请你自己填，AI 不代写。'}
-        </p>
+        field.constraints.sensitiveKind === 'personal' && (qa?.finalValue ?? '').trim() ? (
+          <p className="text-[12px] text-emerald-300 bg-emerald-500/10 rounded px-2 py-1.5 inline-flex items-center gap-1.5">
+            <UserCheck className="w-3.5 h-3.5" />
+            已用人员档案里的本人信息自动回填，提交前请核对（AI 不代写个人信息）。
+          </p>
+        ) : (
+          <p className="text-[12px] text-amber-300 bg-amber-500/10 rounded px-2 py-1.5 inline-flex items-center gap-1.5">
+            <Lock className="w-3.5 h-3.5" />
+            {field.constraints.sensitiveKind === 'otp'
+              ? '验证码请直接在网页里填，AI 不代写。'
+              : '个人 / 联系人信息，请你自己填或在 人员档案 里存一次以便自动回填，AI 不代写。'}
+          </p>
+        )
       )}
 
       {/* Provenance "ⓘ 为什么扫到这个字段？" toggle — collapsed by default to

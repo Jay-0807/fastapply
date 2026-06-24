@@ -15,15 +15,20 @@ import type {
   EventContext,
   LLMConfig,
   ScanMode,
+  Person,
+  ProjectFacts,
 } from '@/lib/db/types';
 import type { Message, StreamingEvent } from '@/lib/messages/types';
 import { generateDraft, generateBatchDrafts } from '@/lib/claude/client';
+import { resolvePersonalFills, type PersonalFillResolution } from '@/lib/graph/person-fields';
+import { deriveEventType, deriveTopicTags } from '@/lib/graph/event-similarity';
 import { scanHybrid } from '@/lib/fields/semantic/orchestrate';
 import type { SemanticLLMConfig } from '@/lib/fields/semantic/extract';
 import type { ControlManifestEntry, ScanResult } from '@/lib/fields/semantic/types';
 import { parseDocument } from '@/lib/parsers';
 import { chunkText, approxTokenCount } from '@/lib/rag/embedding';
-import { retrieveHybrid } from '@/lib/rag/retrieval';
+import { retrieveGraphAware } from '@/lib/rag/retrieval';
+import { isSeedableQaPair, buildQaChunkText } from '@/lib/rag/qa-seed';
 import { buildMarkdown, buildFilename, slugify } from '@/lib/markdown/qa-writer';
 import {
   deriveKey,
@@ -157,9 +162,13 @@ async function handle(msg: Message): Promise<unknown> {
     }
     case 'events.detectFromPage':
       return detectEventFromPage(msg.payload.tabId);
-    case 'events.save':
-      await db.eventContexts.put(msg.payload.eventContext);
-      return msg.payload.eventContext;
+    case 'events.save': {
+      // V0.4.0 KG: derive the matching hints (eventType / topicTags) at save
+      // time so the graph-aware retriever can find similar past events later.
+      const ec = withDerivedEventGraph(msg.payload.eventContext);
+      await db.eventContexts.put(ec);
+      return ec;
+    }
     case 'fields.scan':
       return scanFieldsOnTab(msg.payload.tabId, msg.payload.mode);
     case 'draft.generateOne':
@@ -209,6 +218,22 @@ async function handle(msg: Message): Promise<unknown> {
         await db.qaRecords.delete(msg.payload.id);
       });
       return { ok: true };
+    // ===== V0.4.0 knowledge graph: Person CRUD =====
+    case 'persons.list':
+      return db.persons.orderBy('createdAt').reverse().toArray();
+    case 'persons.create':
+      return createPerson(msg.payload);
+    case 'persons.update':
+      await db.persons.update(msg.payload.id, { ...msg.payload.patch, updatedAt: Date.now() });
+      return db.persons.get(msg.payload.id);
+    case 'persons.delete':
+      await db.persons.delete(msg.payload.id);
+      return { ok: true };
+    case 'persons.resolveFills':
+      return resolvePersonalFillsForFields(msg.payload);
+    // ===== V0.4.0 knowledge graph: structured fact extraction from a dropped file =====
+    case 'projectFacts.extract':
+      return extractProjectFactsFromText(msg.payload.text);
     default: {
       const _exhaustive: never = msg;
       throw new Error(`Unhandled message: ${(_exhaustive as { type: string }).type}`);
@@ -230,6 +255,149 @@ async function createProject(args: { name: string; description: string; tags: st
   };
   await db.projects.add(proj);
   return proj;
+}
+
+// ===========================================================================
+// V0.4.0 knowledge graph — Person CRUD + personal-fill resolution +
+// event-graph derivation + structured fact extraction.
+// ===========================================================================
+
+/** Canonical PersonFieldKey set — used to whitelist LLM-extracted person fields. */
+const PERSON_FIELD_KEYS = ['name', 'phone', 'email', 'wechat', 'qq', 'idNumber', 'title', 'organization', 'address', 'bio'] as const;
+
+async function createPerson(args: {
+  displayName: string;
+  role?: string;
+  fields?: Person['fields'];
+  notes?: string;
+}): Promise<Person> {
+  const now = Date.now();
+  const person: Person = {
+    id: uuid(),
+    displayName: args.displayName,
+    role: args.role ?? '',
+    fields: args.fields ?? {},
+    notes: args.notes ?? '',
+    createdAt: now,
+    updatedAt: now,
+  };
+  await db.persons.add(person);
+  return person;
+}
+
+/**
+ * Resolve which personal fields can be auto-filled from the selected people's
+ * stored profiles. Pure logic lives in person-fields.ts; this just loads the
+ * Person rows. The sidepanel merges the result into its fillMap (visible to the
+ * user) — we never fill personal info silently or via the LLM.
+ */
+async function resolvePersonalFillsForFields(payload: {
+  fields: DetectedField[];
+  personIds: string[];
+  primaryPersonId?: string;
+}): Promise<PersonalFillResolution[]> {
+  if (!payload.personIds.length) return [];
+  const loaded = await db.persons.bulkGet(payload.personIds);
+  const persons = loaded.filter((p): p is Person => !!p);
+  return resolvePersonalFills(payload.fields, persons, payload.primaryPersonId);
+}
+
+/** Fill in derived matching hints (eventType / topicTags) on an event if absent. */
+function withDerivedEventGraph(ec: EventContext): EventContext {
+  return {
+    ...ec,
+    eventType: ec.eventType ?? deriveEventType(ec),
+    topicTags: ec.topicTags && ec.topicTags.length ? ec.topicTags : deriveTopicTags(ec),
+  };
+}
+
+/**
+ * Provider-aware one-shot text completion (mirrors extractEventFromBody's
+ * dispatch). Used for the structured fact / person extraction below.
+ */
+async function llmOneShotText(
+  cfg: Awaited<ReturnType<typeof requireLLMConfigById>>,
+  prompt: string,
+  maxTokens: number,
+): Promise<string> {
+  if (cfg.provider === 'anthropic') {
+    const Anthropic = (await import('@anthropic-ai/sdk')).default;
+    const client = new Anthropic({ apiKey: cfg.apiKey, timeout: 30_000, dangerouslyAllowBrowser: true });
+    const resp = await client.messages.create({ model: cfg.modelId, max_tokens: maxTokens, messages: [{ role: 'user', content: prompt }] });
+    return resp.content.map((b) => (b.type === 'text' ? b.text : '')).join('');
+  }
+  const OpenAI = (await import('openai')).default;
+  const client = new OpenAI({ apiKey: cfg.apiKey, baseURL: cfg.baseURL!, timeout: 30_000, dangerouslyAllowBrowser: true });
+  const resp = await client.chat.completions.create({ model: cfg.modelId, max_tokens: maxTokens, messages: [{ role: 'user', content: prompt }] });
+  return resp.choices[0]?.message?.content ?? '';
+}
+
+export interface ExtractedPersonCandidate {
+  displayName: string;
+  role: string;
+  fields: Person['fields'];
+}
+
+/**
+ * Extract structured project facts + person candidates from a dropped file's
+ * text. Returns CANDIDATES ONLY — the UI shows them for the user to confirm /
+ * edit before anything is written to the graph (we never blindly trust the LLM;
+ * decision 2026-06-24). Sensitive person info is whitelisted to known keys and
+ * the prompt forbids fabrication.
+ */
+async function extractProjectFactsFromText(text: string): Promise<{ facts: ProjectFacts; persons: ExtractedPersonCandidate[] }> {
+  const clipped = (text ?? '').slice(0, 12000);
+  if (clipped.trim().length < 20) return { facts: {}, persons: [] };
+  const cfg = await requireLLMConfigById();
+
+  const prompt = `下面是用户提供的一份项目资料（BP / 产品介绍 / 团队介绍等）。请抽取结构化信息，严格输出 JSON。
+
+【资料正文（前 12000 字）】
+${clipped}
+
+【任务】抽取两部分：
+1) facts —— 项目结构化事实（找不到的字段留空字符串）：
+   oneLiner(一句话介绍) / sector(赛道行业) / stage(阶段，如 种子轮/已成立公司) / location(所在城市) / teamSize(团队规模) / metrics(关键指标进展) / techStack(技术栈)
+2) persons —— 团队成员数组（只抽资料里明确写到的真实人）：每个含 displayName(姓名), role(角色/职位), fields{ name, phone, email, wechat, title, organization }（这些个人信息仅在资料里明确出现才填，否则省略该键）
+
+【绝对规则】不确定就留空 / 省略；**绝不编造人名、电话、邮箱、身份证、微信**。个人敏感信息只在原文明确出现才填。
+
+【输出格式 · 严格 JSON · 不要 markdown 包裹】
+{"facts":{"oneLiner":"","sector":"","stage":"","location":"","teamSize":"","metrics":"","techStack":""},"persons":[]}
+
+直接输出 JSON。`;
+
+  const raw = await llmOneShotText(cfg, prompt, 1024);
+  const m = raw.match(/\{[\s\S]*\}/);
+  if (!m) throw new Error('结构化抽取失败：模型没有返回 JSON');
+  const parsed = JSON.parse(m[0]) as {
+    facts?: Record<string, unknown>;
+    persons?: Array<{ displayName?: unknown; role?: unknown; fields?: Record<string, unknown> }>;
+  };
+
+  // Sanitize facts — keep only known string keys with non-empty values.
+  const facts: ProjectFacts = {};
+  const f = parsed.facts ?? {};
+  for (const key of ['oneLiner', 'sector', 'stage', 'location', 'teamSize', 'metrics', 'techStack'] as const) {
+    const v = f[key];
+    if (typeof v === 'string' && v.trim()) facts[key] = v.trim();
+  }
+
+  // Sanitize persons — whitelist field keys, require a display name, never invent.
+  const persons: ExtractedPersonCandidate[] = [];
+  for (const p of parsed.persons ?? []) {
+    const displayName = typeof p.displayName === 'string' ? p.displayName.trim() : '';
+    if (!displayName) continue;
+    const fields: Person['fields'] = {};
+    const src = p.fields ?? {};
+    for (const key of PERSON_FIELD_KEYS) {
+      const v = src[key];
+      if (typeof v === 'string' && v.trim()) fields[key] = v.trim();
+    }
+    persons.push({ displayName, role: typeof p.role === 'string' ? p.role.trim() : '', fields });
+  }
+
+  return { facts, persons };
 }
 
 async function uploadDocument(args: {
@@ -634,18 +802,20 @@ async function generateOneDraft(payload: {
 
     const event = await db.eventContexts.get(payload.eventContextId);
     if (!event) throw new Error('Event context not found');
+    const project = await db.projects.get(payload.projectId);
 
-    // V1 architecture: no embedding. We pull all chunks for the project and
-    // let Claude's 200K context do the work. retrieveContext applies a cheap
-    // keyword-overlap rank in case we ever need to cap the corpus.
+    // V0.4.0 KG: graph-aware retrieval ranks historical answers by how similar
+    // their event was to THIS event (theme/organizer/type/location), so a
+    // similar past competition's answers surface first. Docs unchanged.
     const query = [
       payload.field.label,
       payload.field.constraints.placeholder,
       payload.field.constraints.helperText,
     ].filter(Boolean).join(' · ');
 
-    const { documentResults, qaResults } = await retrieveHybrid({
+    const { documentResults, qaResults } = await retrieveGraphAware({
       projectId: payload.projectId,
+      currentEvent: event,
       query,
     });
 
@@ -659,6 +829,7 @@ async function generateOneDraft(payload: {
       qaChunks: qaResults.map((r) => r.chunk),
       model: cfg.modelId,
       ...(payload.refinement ? { refinement: payload.refinement } : {}),
+      ...(project?.facts ? { projectFacts: project.facts } : {}),
       onToken: (tok) => broadcast({ kind: 'draft.token', streamId, token: tok }),
     });
 
@@ -720,6 +891,7 @@ async function generateBatchDrafts_handler(payload: {
   // ---- Step 1: resolve config + event + RAG (unrecoverable if this fails) ----
   let cfg: Awaited<ReturnType<typeof requireLLMConfigById>>;
   let event: EventContext | undefined;
+  let projectFacts: ProjectFacts | undefined;
   let projectChunks: Chunk[] = [];
   let qaChunks: Chunk[] = [];
   let refChunkIds: string[] = [];
@@ -728,10 +900,11 @@ async function generateBatchDrafts_handler(payload: {
     cfg = await requireLLMConfigById(payload.configId);
     event = await db.eventContexts.get(payload.eventContextId);
     if (!event) throw new Error('Event context not found');
+    projectFacts = (await db.projects.get(payload.projectId))?.facts;
     const query = fields
       .map((f) => [f.label, f.constraints.placeholder, f.constraints.helperText].filter(Boolean).join(' '))
       .join(' · ');
-    const { documentResults, qaResults } = await retrieveHybrid({ projectId: payload.projectId, query });
+    const { documentResults, qaResults } = await retrieveGraphAware({ projectId: payload.projectId, currentEvent: event, query });
     projectChunks = documentResults.map((r) => r.chunk);
     qaChunks = qaResults.map((r) => r.chunk);
     refChunkIds = [...documentResults, ...qaResults].map((r) => r.chunk.id);
@@ -755,6 +928,7 @@ async function generateBatchDrafts_handler(payload: {
       projectChunks,
       qaChunks,
       model: cfg.modelId,
+      ...(projectFacts ? { projectFacts } : {}),
     });
     batchModelUsed = result.modelUsed;
     Object.assign(drafts, result.drafts);
@@ -841,22 +1015,36 @@ async function markRecordSubmitted(qaRecordId: string): Promise<{ markdownPath: 
 
   // Index each Q&A as a chunk so it shows up in future draft generation. V1
   // skips embedding — Sonnet's 200K context fits the full corpus comfortably.
-  const qaTexts = record.qaPairs.map((qa) =>
-    `Q: ${qa.fieldLabel}\nContext: 活动主题=${event.theme}, 主办方=${event.organizer}\nA (最终版本): ${qa.finalValue}`,
-  );
-  const newChunks: Chunk[] = record.qaPairs.map((qa, i) => ({
-    id: uuid(),
-    sourceType: 'qa',
-    sourceId: record.id,
-    projectId: record.projectId,
-    text: qaTexts[i] ?? '',
-    embedding: new Float32Array(0),
-    embeddingModel: 'none',
-    tokenCount: approxTokenCount(qaTexts[i] ?? ''),
-    excludedFromRag: false,
-    createdAt: Date.now(),
-    metadata: { qaIndex: i, fieldId: qa.fieldId, fieldLabel: qa.fieldLabel },
-  }));
+  // V0.4.0 KG + PRIVACY: seed each Q&A as a chunk for future retrieval, baking
+  // the full event identity (主办方 / 地点 / 主题 / 类型) into the text AND the
+  // structured metadata (eventContextId / personIds = the graph edge).
+  // CRITICAL: personal/OTP answers are NEVER seeded — that would leak the user's
+  // real phone/email/ID into every future draft prompt (Code GAN 2026-06-24).
+  // They remain in the QARecord + downloaded markdown (local only).
+  const seedable = record.qaPairs.filter(isSeedableQaPair);
+  const newChunks: Chunk[] = seedable.map((qa, i) => {
+    const text = buildQaChunkText(qa, event);
+    return {
+      id: uuid(),
+      sourceType: 'qa',
+      sourceId: record.id,
+      projectId: record.projectId,
+      text,
+      embedding: new Float32Array(0),
+      embeddingModel: 'none',
+      tokenCount: approxTokenCount(text),
+      excludedFromRag: false,
+      createdAt: Date.now(),
+      metadata: {
+        qaIndex: i,
+        fieldId: qa.fieldId,
+        fieldLabel: qa.fieldLabel,
+        eventContextId: record.eventContextId,
+        eventType: event.eventType ?? null,
+        personIds: record.personIds ?? [],
+      },
+    };
+  });
   if (newChunks.length) await db.chunks.bulkAdd(newChunks);
 
   const markdownPath = `applyforge/${slugify(project.name)}/${filename}`;
@@ -1030,7 +1218,7 @@ ${assets.map((a, i) => `${i}: id="${a.id}" filename="${a.filename}" mime="${a.mi
  * Returns { json, sizeBytes } so the UI can show "Save 4.2 MB backup".
  */
 async function exportBackup(): Promise<{ json: string; sizeBytes: number; counts: Record<string, number> }> {
-  const [projects, documents, chunks, eventContexts, qaRecords, projectAssets, appSettings] = await Promise.all([
+  const [projects, documents, chunks, eventContexts, qaRecords, projectAssets, appSettings, persons] = await Promise.all([
     db.projects.toArray(),
     db.documents.toArray(),
     db.chunks.toArray(),
@@ -1038,6 +1226,7 @@ async function exportBackup(): Promise<{ json: string; sizeBytes: number; counts
     db.qaRecords.toArray(),
     db.projectAssets.toArray(),
     db.appSettings.toArray(),
+    db.persons.toArray(),
   ]);
 
   // Convert each asset.blob (Blob) to base64. Done sequentially to avoid
@@ -1064,7 +1253,9 @@ async function exportBackup(): Promise<{ json: string; sizeBytes: number; counts
   }
 
   const dump = {
-    formatVersion: 1,
+    // v2 (V0.4.0): adds the `persons` table. Import still accepts v1 backups
+    // (persons simply absent → restored as an empty table).
+    formatVersion: 2,
     exportedAt: new Date().toISOString(),
     appVersion: '0.1.0',
     counts: {
@@ -1075,6 +1266,7 @@ async function exportBackup(): Promise<{ json: string; sizeBytes: number; counts
       qaRecords: qaRecords.length,
       projectAssets: projectAssets.length,
       appSettings: appSettings.length,
+      persons: persons.length,
     },
     tables: {
       projects,
@@ -1088,6 +1280,7 @@ async function exportBackup(): Promise<{ json: string; sizeBytes: number; counts
       qaRecords,
       projectAssets: serializedAssets,
       appSettings,
+      persons,
     },
   };
 
@@ -1112,12 +1305,15 @@ async function importBackup(jsonText: string): Promise<{ counts: Record<string, 
       qaRecords: unknown[];
       projectAssets: { id: string; projectId: string; filename: string; mimeType: string; sizeBytes: number; tag: string; notes?: string; createdAt: number; blobBase64: string }[];
       appSettings: unknown[];
+      /** V0.4.0 (formatVersion 2). Absent in v1 backups → restored as empty. */
+      persons?: unknown[];
     };
   };
 
-  if (dump.formatVersion !== 1) {
+  if (dump.formatVersion !== 1 && dump.formatVersion !== 2) {
     throw new Error(`Unsupported backup format version: ${dump.formatVersion}`);
   }
+  const persons = dump.tables.persons ?? [];
 
   // Rebuild blobs from base64 + restore Float32Array embeddings.
   const assets = dump.tables.projectAssets.map((a) => ({
@@ -1137,7 +1333,7 @@ async function importBackup(jsonText: string): Promise<{ counts: Record<string, 
   })) as unknown as Parameters<typeof db.chunks.bulkAdd>[0];
 
   await db.transaction('rw',
-    [db.projects, db.documents, db.chunks, db.eventContexts, db.qaRecords, db.projectAssets, db.appSettings],
+    [db.projects, db.documents, db.chunks, db.eventContexts, db.qaRecords, db.projectAssets, db.appSettings, db.persons],
     async () => {
       // Clear everything first — restore is destructive.
       await Promise.all([
@@ -1148,6 +1344,7 @@ async function importBackup(jsonText: string): Promise<{ counts: Record<string, 
         db.qaRecords.clear(),
         db.projectAssets.clear(),
         db.appSettings.clear(),
+        db.persons.clear(),
       ]);
       // Bulk-restore. Order isn't load-bearing since we cleared first.
       // Cast to any for the tables that hold complex structured types
@@ -1160,6 +1357,7 @@ async function importBackup(jsonText: string): Promise<{ counts: Record<string, 
       await db.qaRecords.bulkAdd(dump.tables.qaRecords as Parameters<typeof db.qaRecords.bulkAdd>[0]);
       await db.projectAssets.bulkAdd(assets);
       await db.appSettings.bulkAdd(dump.tables.appSettings as Parameters<typeof db.appSettings.bulkAdd>[0]);
+      await db.persons.bulkAdd(persons as Parameters<typeof db.persons.bulkAdd>[0]);
     });
 
   return {
@@ -1171,6 +1369,7 @@ async function importBackup(jsonText: string): Promise<{ counts: Record<string, 
       qaRecords: dump.tables.qaRecords.length,
       projectAssets: assets.length,
       appSettings: dump.tables.appSettings.length,
+      persons: persons.length,
     },
   };
 }

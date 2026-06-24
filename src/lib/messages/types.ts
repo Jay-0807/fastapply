@@ -1,7 +1,7 @@
 // Typed message bus between UI surfaces (popup / sidepanel / options / content)
 // and the background service worker. All cross-context calls go through this.
 
-import type { DetectedField, EventContext, Project, QARecord, AppSettings, LLMProviderType, ScanMode } from '@/lib/db/types';
+import type { DetectedField, EventContext, Project, QARecord, AppSettings, LLMProviderType, ScanMode, Person, ProjectFacts } from '@/lib/db/types';
 
 export type Message =
   | { type: 'projects.list' }
@@ -103,7 +103,22 @@ export type Message =
   | { type: 'settings.save'; payload: { patch: Partial<AppSettings>; plainKeys?: { anthropic?: string; openai?: string; openaiCompat?: string; masterPassword?: string } } }
   | { type: 'backup.export' }
   | { type: 'backup.import'; payload: { jsonText: string } }
-  | { type: 'qaRecord.delete'; payload: { id: string } };
+  | { type: 'qaRecord.delete'; payload: { id: string } }
+  // ===== V0.4.0 knowledge graph: Person CRUD =====
+  | { type: 'persons.list' }
+  | { type: 'persons.create'; payload: { displayName: string; role?: string; fields?: Person['fields']; notes?: string } }
+  | { type: 'persons.update'; payload: { id: string; patch: Partial<Person> } }
+  | { type: 'persons.delete'; payload: { id: string } }
+  // Resolve which personal fields can be auto-filled from the selected people's
+  // stored profiles. Returns PersonalFillResolution[] (fieldId → real value).
+  | { type: 'persons.resolveFills'; payload: { fields: DetectedField[]; personIds: string[]; primaryPersonId?: string } }
+  // ===== V0.4.0 knowledge graph: structured fact extraction from a dropped file =====
+  // Returns { facts: ProjectFacts; persons: ExtractedPersonCandidate[] } — CANDIDATES
+  // for the user to confirm/edit before they're written to the graph.
+  | { type: 'projectFacts.extract'; payload: { text: string } };
+
+// Re-export so UI imports stay co-located with the message contracts.
+export type { ProjectFacts };
 
 export type MessageType = Message['type'];
 

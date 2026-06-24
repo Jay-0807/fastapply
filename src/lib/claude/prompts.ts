@@ -2,8 +2,34 @@
 // Designed to enforce field constraints AS HARD CONSTRAINTS — the failure mode
 // Claude for Chrome exhibits is exactly that it ignores length hints.
 
-import type { DetectedField, EventContext, Chunk } from '@/lib/db/types';
+import type { DetectedField, EventContext, Chunk, ProjectFacts } from '@/lib/db/types';
 import { MAX_CHUNK_CHARS_FOR_PROMPT } from '@/lib/rag/retrieval';
+
+/**
+ * V0.4.0 knowledge graph: render the project's structured facts as a high-
+ * priority context block. These are curated key/values (sector / stage /
+ * metrics …) the user confirmed — higher signal than free-text doc chunks, so
+ * we present them first and tell the model to trust them. Returns '' when there
+ * are no facts (keeps old projects' prompts byte-identical → no regression).
+ */
+function formatProjectFacts(facts?: ProjectFacts): string {
+  if (!facts) return '';
+  const lines: string[] = [];
+  if (facts.oneLiner) lines.push(`- 一句话介绍: ${facts.oneLiner}`);
+  if (facts.sector) lines.push(`- 赛道/行业: ${facts.sector}`);
+  if (facts.stage) lines.push(`- 阶段: ${facts.stage}`);
+  if (facts.location) lines.push(`- 所在地: ${facts.location}`);
+  if (facts.teamSize) lines.push(`- 团队规模: ${facts.teamSize}`);
+  if (facts.metrics) lines.push(`- 关键指标: ${facts.metrics}`);
+  if (facts.techStack) lines.push(`- 技术栈: ${facts.techStack}`);
+  if (facts.extra) {
+    for (const [k, v] of Object.entries(facts.extra)) {
+      if (v) lines.push(`- ${k}: ${v}`);
+    }
+  }
+  if (!lines.length) return '';
+  return `【项目结构化信息 · 准确事实，优先使用，不要与之矛盾】\n${lines.join('\n')}\n\n`;
+}
 
 /**
  * Truncate a chunk's text for prompt inclusion. Keeps the first
@@ -65,6 +91,8 @@ interface BuildPromptArgs {
    * converges instead of producing another random draft.
    */
   refinement?: string;
+  /** V0.4.0 knowledge graph: the project's curated structured facts. */
+  projectFacts?: ProjectFacts;
 }
 
 export function buildUserPrompt(args: BuildPromptArgs): string {
@@ -112,7 +140,7 @@ export function buildUserPrompt(args: BuildPromptArgs): string {
 - 链接: ${event.url || '（未填）'}
 ${event.extraNotes ? `- 补充说明: ${event.extraNotes}` : ''}
 
-【项目档案 · 检索到的最相关 ${projectChunks.length} 个片段】
+${formatProjectFacts(args.projectFacts)}【项目档案 · 检索到的最相关 ${projectChunks.length} 个片段】
 ${projectSection}
 
 【我之前类似字段的回答 · ${qaChunks.length} 个】
@@ -157,7 +185,7 @@ function buildChoicePrompt(args: BuildPromptArgs): string {
 - 地点: ${event.location || '（未填）'}
 ${event.extraNotes ? `- 补充说明: ${event.extraNotes}` : ''}
 
-【项目档案】
+${formatProjectFacts(args.projectFacts)}【项目档案】
 ${projectSection}
 
 【历史 Q&A】
@@ -211,6 +239,8 @@ export interface BuildBatchPromptArgs {
   event: EventContext;
   projectChunks: Chunk[];
   qaChunks: Chunk[];
+  /** V0.4.0 knowledge graph: the project's curated structured facts. */
+  projectFacts?: ProjectFacts;
 }
 
 export interface BatchPromptResult {
@@ -271,7 +301,7 @@ export function buildBatchPrompt(args: BuildBatchPromptArgs): BatchPromptResult 
 - 链接: ${event.url || '（未填）'}
 ${event.extraNotes ? `- 补充说明: ${event.extraNotes}` : ''}
 
-【项目档案 · 检索到的最相关 ${projectChunks.length} 个片段】
+${formatProjectFacts(args.projectFacts)}【项目档案 · 检索到的最相关 ${projectChunks.length} 个片段】
 ${projectSection}
 
 【我之前类似字段的回答 · ${qaChunks.length} 个】

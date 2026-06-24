@@ -16,6 +16,15 @@ WXT 0.19（Chrome MV3）· React 18 · TypeScript 5.6（strict + `exactOptionalP
 2. **图标一律 lucide-react，禁止 emoji**（2026-05-29 redline；options/popup/sidepanel 三个 `App.tsx` 都已用 lucide）。
 3. **`exactOptionalPropertyTypes: true`** —— 可选字段别显式赋 `undefined`，要么给值要么省略 key。
 4. **改完必须回写文档**（闭合学习回路，见文末）。
+5. **个人信息（PII）三条红线**（2026-06-24，V0.4.0 知识图谱起，部分反转旧 G5）——违反会泄露用户真实手机/邮箱/身份证：① 个人字段**可**自动回填，但**只回填用户在 Person 档案里存的本人真实值**（`graph/person-fields.ts` 确定性映射），**AI 草稿生成永远不碰个人信息**；② **OTP/验证码永不存、永不回填**（一次性，不可复用）；③ **个人/OTP 答案绝不种进 RAG 语料**（`rag/qa-seed.ts isSeedableQaPair`，`markRecordSubmitted` 种 chunk 前过滤）—— 回填的真实值会进 `qaPairs.finalValue`，若无差别种进 chunk 就会经"历史 Q&A"漏进未来所有草稿 prompt（Code GAN 实测发现的真 bug，与 V0.3.0「相邻 contenteditable PII 泄露」同源：**隐私边界要守数据流每一跳，不止填充点**）。
+
+## 知识图谱 `src/lib/graph/` + `rag/retrieval.ts`（V0.4.0，2026-06-24）—— 结构化调取人员/项目/赛事
+解决"调取信息方式有误、无结构化知识图谱"。实体：**Person**（`persons` 表，独立存本人真实信息）/ **Project.facts**（结构化项目事实，高优先 RAG 上下文）/ **EventContext.eventType+topicTags**（赛事分类）/ **QARecord.personIds**（人↔赛事↔答案三元边）。
+- **图谱感知检索** `retrieveGraphAware`：历史 Q&A 按赛事相似度（主题/主办方/类型/地点，`graph/event-similarity.ts scoreEventSimilarity`）重排，**keyword 仍为主项（0.7 vs 0.3）保证非退化**；文档检索字节不变；无事件元信息时塌回 keyword baseline。别把它改成纯相似度盖过 keyword（会退化）。
+- **个人信息回填** `graph/person-fields.ts`：`mapLabelToPersonFieldKey`（email/phone/idNumber 等具体族**先于** name 匹配，否则 ID 号误进 name）+ `resolvePersonalFills`（主联系人优先 + 回退；只回填本人已存值；**永不碰 OTP**）。多人表单"队员N"逐字段映射未做（MVP 用主联系人）。
+- **项目 facts 注入** `prompts.ts formatProjectFacts`：空 facts → 空串（老项目 prompt 字节不变，无回归）。
+- **结构化抽取** `background.extractProjectFactsFromText`：丢文件 → LLM 抽 facts+人员候选 → **返回候选、UI 确认后才入库**（不盲信 LLM，同 detectEventFromPage 外发姿态）。
+- **Dexie v6→v7 迁移**：只重定义变更的 store（persons 新表 / eventContexts 加 eventType 索引 / qaRecords 加 `*personIds` multiEntry），**未重定义的表 Dexie 自动 carry-forward 不会丢**；`upgrade()` 幂等回填（`=== undefined` 守卫）。备份 formatVersion 2 含 persons（兼容 v1 老备份）。改 schema 仍走"§6 + schema.ts migration + tests"三件套。
 
 ## 字段扫描器 `src/lib/fields/field-scanner.ts` —— 核心资产，最容易踩坑
 表单分两大形态，**两条路径都必须支持**：

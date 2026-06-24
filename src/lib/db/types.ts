@@ -9,6 +9,44 @@ export interface Project {
   createdAt: number;
   updatedAt: number;
   applicationCount: number;
+  /**
+   * V0.4.0 knowledge graph: structured, retrieval-friendly project facts
+   * (sector / stage / location / metrics …). Distinct from free-text document
+   * chunks — these are high-signal key/values the graph-aware retriever injects
+   * as priority context. Optional for back-compat; schema v7 backfills `{}`.
+   */
+  facts?: ProjectFacts;
+  /**
+   * V0.4.0 knowledge graph: Person ids who are members of this project's team.
+   * Drives the sidepanel person picker (who's applying with this project).
+   * Optional for back-compat; schema v7 backfills `[]`.
+   */
+  memberIds?: string[];
+}
+
+/**
+ * V0.4.0 knowledge graph: structured project facts. Every field optional —
+ * the user (or a confirmed LLM extraction of dropped files) fills what's known.
+ * `extra` holds any additional structured fact the form domain throws at us
+ * (e.g. "注册资本", "知识产权数").
+ */
+export interface ProjectFacts {
+  /** One-sentence pitch / 一句话介绍. */
+  oneLiner?: string;
+  /** 赛道 / 行业 / sector, e.g. "AI Agent", "新能源". */
+  sector?: string;
+  /** 项目 / 融资阶段, e.g. "种子轮", "Pre-A", "已成立公司". */
+  stage?: string;
+  /** 注册地 / 所在城市 / location. */
+  location?: string;
+  /** 团队规模, e.g. "8 人". */
+  teamSize?: string;
+  /** Traction / 关键指标 (free-form, e.g. "MAU 5万, 月流水 30万"). */
+  metrics?: string;
+  /** 技术栈 / 核心技术. */
+  techStack?: string;
+  /** Any other structured fact, keyed by a human label. */
+  extra?: Record<string, string>;
 }
 
 export type ParseStatus = 'pending' | 'parsed' | 'failed';
@@ -52,7 +90,33 @@ export interface EventContext {
   extraNotes: string;
   pageMetaJson: Record<string, unknown>;
   createdAt: number;
+  /**
+   * V0.4.0 knowledge graph: normalized event category, used to pre-filter and
+   * boost similar past events when retrieving reusable answers. Derived from
+   * organizer / theme / name (see `deriveEventType`). Optional for back-compat;
+   * schema v7 backfills a best-effort value.
+   */
+  eventType?: EventType;
+  /**
+   * V0.4.0 knowledge graph: topic tags (derived from theme + name) for
+   * similarity matching beyond eventType. Optional; schema v7 backfills.
+   */
+  topicTags?: string[];
 }
+
+/**
+ * V0.4.0 knowledge graph: coarse event category for "find similar past events".
+ * `other` is the safe default when nothing matches — never blocks retrieval,
+ * just contributes 0 to the type-match similarity component.
+ */
+export type EventType =
+  | 'hackathon'   // 黑客松 / hackathon
+  | 'venture'     // 创投 / 创业大赛 / pitch competition
+  | 'accelerator' // 加速器 / 孵化器 / incubator
+  | 'policy'      // 政策申报 / 政府项目
+  | 'roadshow'    // 路演
+  | 'course'      // 课程 / 训练营报名
+  | 'other';
 
 export type FieldType = 'text' | 'textarea' | 'select' | 'checkbox' | 'radio' | 'number' | 'email' | 'url' | 'tel' | 'date' | 'file' | 'unknown';
 
@@ -183,6 +247,14 @@ export interface QARecord {
   id: string;
   projectId: string;
   eventContextId: string;
+  /**
+   * V0.4.0 knowledge graph: Person ids who participated in / whose personal
+   * info was used for this application. This is the edge that associates a
+   * Person with the concrete answers they gave at a specific event, so a
+   * similar future event can pull "what did 张三 fill for 联系电话 last time".
+   * Optional for back-compat; schema v7 backfills `[]`.
+   */
+  personIds?: string[];
   status: QARecordStatus;
   qaPairs: QAPair[];
   markdownPath: string | null;
@@ -197,6 +269,54 @@ export interface QARecord {
     skipped: number;
   };
   createdAt: number;
+}
+
+/**
+ * V0.4.0 knowledge graph: canonical keys for a Person's reusable personal info.
+ * These map 1:1 to the personal field families the scanner flags as
+ * `sensitiveKind:'personal'` (see PERSONAL_LABEL_RE in field-scanner.ts), so a
+ * detected "联系电话" field resolves to `phone`, "姓名" to `name`, etc.
+ *
+ * IMPORTANT — privacy posture (decision 2026-06-24): these hold the user's OWN
+ * REAL data, entered explicitly into a Person profile. They are auto-filled
+ * verbatim into matching personal fields. The AI generator NEVER writes these
+ * (it still skips `noAiFill` fields). OTP / captcha is NEVER stored here.
+ */
+export type PersonFieldKey =
+  | 'name'         // 姓名 / 联系人
+  | 'phone'        // 手机 / 电话 / 联系方式
+  | 'email'        // 邮箱 / 电子邮件
+  | 'wechat'       // 微信
+  | 'qq'           // QQ 号
+  | 'idNumber'     // 身份证 / 证件号 / 护照
+  | 'title'        // 职位 / 头衔
+  | 'organization' // 单位 / 公司
+  | 'address'      // 地址
+  | 'bio';         // 个人简介 (longer free text)
+
+/**
+ * V0.4.0 knowledge graph: a reusable participant profile. Each team member who
+ * ever fills a registration form gets one, so their personal info is stored
+ * ONCE and reused across events instead of being hand-typed every time.
+ *
+ * Privacy: stored LOCALLY ONLY (IndexedDB), like everything else in this
+ * extension — never sent anywhere. The structured `fields` are the user's real
+ * PII; they are deterministically auto-filled into matching personal form
+ * fields, but are NEVER fed to the LLM draft generator (which only sees the
+ * project corpus + non-personal context). Included in backup export/import.
+ */
+export interface Person {
+  id: string;
+  /** Friendly label for pickers / lists, e.g. "张三 (创始人)". User-editable. */
+  displayName: string;
+  /** Role on the team, free-form, e.g. "创始人/CEO", "CTO", "联系人". */
+  role: string;
+  /** Structured reusable personal info. Keyed by PersonFieldKey; values are the user's real data. Sparse. */
+  fields: Partial<Record<PersonFieldKey, string>>;
+  /** Optional free-form note (e.g. "用于政府类申报的对外联系人"). */
+  notes: string;
+  createdAt: number;
+  updatedAt: number;
 }
 
 /**

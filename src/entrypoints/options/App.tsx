@@ -17,14 +17,32 @@ import {
   Wrench,
   Sparkles,
   Bot,
+  Users,
+  UserPlus,
+  Trash2,
+  Upload,
 } from 'lucide-react';
 import { db } from '@/lib/db/schema';
-import type { Project, AppSettings, LLMConfig, ScanMode } from '@/lib/db/types';
+import type { Project, AppSettings, LLMConfig, ScanMode, Person, PersonFieldKey, ProjectFacts } from '@/lib/db/types';
 import type { Message } from '@/lib/messages/types';
 import { useToast } from '@/components/ErrorToast';
 import { PROVIDER_PRESETS, getProviderPreset } from '@/lib/llm/provider-catalog';
 
-type Tab = 'projects' | 'history' | 'settings' | 'backup';
+type Tab = 'projects' | 'people' | 'history' | 'settings' | 'backup';
+
+/** Display labels for each reusable Person field (drives the profile editor). */
+const PERSON_FIELD_LABELS: { key: PersonFieldKey; label: string; long?: boolean }[] = [
+  { key: 'name', label: '姓名' },
+  { key: 'phone', label: '手机 / 电话' },
+  { key: 'email', label: '邮箱' },
+  { key: 'wechat', label: '微信' },
+  { key: 'qq', label: 'QQ' },
+  { key: 'idNumber', label: '身份证 / 证件号' },
+  { key: 'title', label: '职位 / 头衔' },
+  { key: 'organization', label: '单位 / 公司' },
+  { key: 'address', label: '地址' },
+  { key: 'bio', label: '个人简介', long: true },
+];
 
 /**
  * Send a typed message to the background service worker and unwrap the
@@ -101,12 +119,14 @@ export function OptionsApp() {
       <aside className="w-56 border-r border-border p-4 flex flex-col gap-1">
         <h1 className="font-semibold mb-4 flex items-center gap-1.5"><Flame className="w-4 h-4 text-orange-500" />ApplyForge</h1>
         <TabBtn label="📁 项目档案" active={tab === 'projects'} onClick={() => setTab('projects')} />
+        <TabBtn label="👤 人员档案" active={tab === 'people'} onClick={() => setTab('people')} />
         <TabBtn label="📚 经验库" active={tab === 'history'} onClick={() => setTab('history')} />
         <TabBtn label="⚙️ 设置" active={tab === 'settings'} onClick={() => setTab('settings')} />
         <TabBtn label="📦 备份" active={tab === 'backup'} onClick={() => setTab('backup')} />
       </aside>
       <main className="flex-1 p-6 overflow-y-auto">
         {tab === 'projects' && <ProjectsPane />}
+        {tab === 'people' && <PeoplePane />}
         {tab === 'history' && <HistoryPane />}
         {tab === 'settings' && <SettingsPane settings={settings} />}
         {tab === 'backup' && <BackupPane />}
@@ -123,6 +143,275 @@ function TabBtn({ label, active, onClick }: { label: string; active: boolean; on
     >
       {label}
     </button>
+  );
+}
+
+// ===========================================================================
+// V0.4.0 knowledge graph — 人员档案 (People) tab.
+// CRUD over reusable Person profiles + a file-driven structured importer that
+// extracts project facts + person candidates from a dropped file (user confirms
+// before anything is written — never blindly trust the LLM).
+// ===========================================================================
+
+type PersonCandidate = { displayName: string; role: string; fields: Person['fields'] };
+type ExtractResult = { facts: ProjectFacts; persons: PersonCandidate[] };
+
+const FACT_LABELS: { key: 'oneLiner' | 'sector' | 'stage' | 'location' | 'teamSize' | 'metrics' | 'techStack'; label: string; long?: boolean }[] = [
+  { key: 'oneLiner', label: '一句话介绍', long: true },
+  { key: 'sector', label: '赛道 / 行业' },
+  { key: 'stage', label: '阶段' },
+  { key: 'location', label: '所在地' },
+  { key: 'teamSize', label: '团队规模' },
+  { key: 'metrics', label: '关键指标 / 进展', long: true },
+  { key: 'techStack', label: '技术栈' },
+];
+
+function PeoplePane() {
+  const persons = useLiveQuery(() => db.persons.orderBy('createdAt').reverse().toArray(), []) ?? [];
+  const projects = useLiveQuery(() => db.projects.toArray(), []) ?? [];
+  const toast = useToast();
+  const [creating, setCreating] = useState(false);
+  const [editingId, setEditingId] = useState<string | null>(null);
+
+  const createPerson = async (data: PersonCandidate & { notes: string }) => {
+    await sendBg({ type: 'persons.create', payload: data });
+    setCreating(false);
+    toast.success('已添加人员');
+  };
+  const updatePerson = async (id: string, data: PersonCandidate & { notes: string }) => {
+    await sendBg({ type: 'persons.update', payload: { id, patch: data } });
+    setEditingId(null);
+    toast.success('已更新人员');
+  };
+  const deletePerson = async (id: string) => {
+    if (!confirm('删除这个人员档案？（不会影响已保存的报名记录）')) return;
+    await sendBg({ type: 'persons.delete', payload: { id } });
+    toast.info('已删除');
+  };
+
+  return (
+    <div className="flex flex-col gap-4 max-w-3xl">
+      <div>
+        <h2 className="text-xl font-semibold flex items-center gap-2"><Users className="w-5 h-5" />人员档案</h2>
+        <p className="text-sm text-muted-foreground mt-1">
+          把常用参赛 / 联系人的个人信息存一次。报名时在侧栏勾选参与的人，姓名 / 手机 / 邮箱等会
+          <strong>自动回填真实信息</strong>（AI 不代写个人信息，提交前你核对）。所有数据仅存本地。
+        </p>
+      </div>
+
+      <StructuredImport projects={projects} />
+
+      {!creating ? (
+        <button onClick={() => setCreating(true)} className="self-start px-3 py-1.5 bg-primary text-primary-foreground rounded text-sm inline-flex items-center gap-1.5">
+          <UserPlus className="w-4 h-4" />新建人员
+        </button>
+      ) : (
+        <PersonForm onSave={createPerson} onCancel={() => setCreating(false)} />
+      )}
+
+      <ul className="flex flex-col gap-2">
+        {persons.map((p) => (
+          <li key={p.id} className="border border-border rounded-md p-3">
+            {editingId === p.id ? (
+              <PersonForm initial={p} onSave={(d) => updatePerson(p.id, d)} onCancel={() => setEditingId(null)} />
+            ) : (
+              <div className="flex items-start justify-between gap-2">
+                <div className="text-sm">
+                  <div className="font-medium">{p.displayName}{p.role ? <span className="text-muted-foreground"> · {p.role}</span> : null}</div>
+                  <div className="text-xs text-muted-foreground mt-1 flex flex-wrap gap-x-3 gap-y-0.5">
+                    {PERSON_FIELD_LABELS.filter(({ key }) => p.fields[key]).map(({ key, label }) => (
+                      <span key={key}>{label}: {p.fields[key]}</span>
+                    ))}
+                  </div>
+                  {p.notes ? <div className="text-xs text-muted-foreground mt-1">备注: {p.notes}</div> : null}
+                </div>
+                <div className="flex gap-2 shrink-0">
+                  <button onClick={() => setEditingId(p.id)} className="text-xs text-primary hover:underline">编辑</button>
+                  <button onClick={() => deletePerson(p.id)} className="text-xs text-red-400 hover:underline inline-flex items-center gap-1"><Trash2 className="w-3 h-3" />删除</button>
+                </div>
+              </div>
+            )}
+          </li>
+        ))}
+        {persons.length === 0 && !creating && (
+          <li className="text-sm text-muted-foreground">还没有人员。点上面「新建人员」或从文件导入。</li>
+        )}
+      </ul>
+    </div>
+  );
+}
+
+function PersonForm({ initial, onSave, onCancel }: {
+  initial?: Person;
+  onSave: (data: PersonCandidate & { notes: string }) => Promise<void> | void;
+  onCancel?: () => void;
+}) {
+  const [displayName, setDisplayName] = useState(initial?.displayName ?? '');
+  const [role, setRole] = useState(initial?.role ?? '');
+  const [fields, setFields] = useState<Person['fields']>(initial?.fields ?? {});
+  const [notes, setNotes] = useState(initial?.notes ?? '');
+  const [busy, setBusy] = useState(false);
+
+  const setField = (k: PersonFieldKey, v: string) =>
+    setFields((prev) => {
+      const next = { ...prev };
+      if (v.trim()) next[k] = v;
+      else delete next[k];
+      return next;
+    });
+
+  const save = async () => {
+    if (!displayName.trim() || busy) return;
+    setBusy(true);
+    try {
+      await onSave({ displayName: displayName.trim(), role: role.trim(), fields, notes: notes.trim() });
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  return (
+    <div className="flex flex-col gap-2 border border-border rounded-md p-3 bg-muted/20">
+      <div className="grid grid-cols-2 gap-2">
+        <Field label="显示名（如 张三）" value={displayName} setValue={setDisplayName} />
+        <Field label="角色 / 职务" value={role} setValue={setRole} placeholder="创始人 / CTO / 联系人" />
+        {PERSON_FIELD_LABELS.filter((f) => !f.long).map(({ key, label }) => (
+          <Field key={key} label={label} value={fields[key] ?? ''} setValue={(v) => setField(key, v)} />
+        ))}
+      </div>
+      {PERSON_FIELD_LABELS.filter((f) => f.long).map(({ key, label }) => (
+        <label key={key} className="flex flex-col gap-1 text-sm">
+          <span className="text-xs text-muted-foreground">{label}</span>
+          <textarea value={fields[key] ?? ''} onChange={(e) => setField(key, e.target.value)} rows={2} className="px-3 py-2 border border-border rounded-md bg-background text-sm" />
+        </label>
+      ))}
+      <label className="flex flex-col gap-1 text-sm">
+        <span className="text-xs text-muted-foreground">备注</span>
+        <input value={notes} onChange={(e) => setNotes(e.target.value)} className="px-3 py-2 border border-border rounded-md bg-background text-sm" placeholder="如：用于政府类申报的对外联系人" />
+      </label>
+      <div className="flex gap-2">
+        <button onClick={save} disabled={busy || !displayName.trim()} className="px-3 py-1.5 bg-primary text-primary-foreground rounded text-sm disabled:opacity-50">{busy ? '保存中…' : '保存'}</button>
+        {onCancel && <button onClick={onCancel} className="px-3 py-1.5 border border-border rounded text-sm">取消</button>}
+      </div>
+    </div>
+  );
+}
+
+// File-driven structured importer: parse a dropped file → LLM extracts project
+// facts + person candidates → user confirms / edits before saving. The facts
+// form is ALSO usable for fully-manual entry (the file just pre-fills it).
+function StructuredImport({ projects }: { projects: Project[] }) {
+  const toast = useToast();
+  const [busy, setBusy] = useState(false);
+  const [targetProjectId, setTargetProjectId] = useState<string>('');
+  const [facts, setFacts] = useState<ProjectFacts>({});
+  const [candidates, setCandidates] = useState<PersonCandidate[]>([]);
+  const [chosen, setChosen] = useState<Record<number, boolean>>({});
+
+  const setFactField = (k: typeof FACT_LABELS[number]['key'], v: string) =>
+    setFacts((prev) => {
+      const next = { ...prev };
+      if (v.trim()) next[k] = v;
+      else delete next[k];
+      return next;
+    });
+
+  const onFile = async (e: React.ChangeEvent<HTMLInputElement>) => {
+    const file = e.target.files?.[0];
+    e.target.value = '';
+    if (!file) return;
+    setBusy(true);
+    try {
+      const { parseDocument } = await import('@/lib/parsers');
+      const text = await parseDocument(file);
+      const res = await sendBg<ExtractResult>({ type: 'projectFacts.extract', payload: { text } });
+      // Merge extracted facts over current (don't wipe manual entries with empties).
+      setFacts((prev) => ({ ...prev, ...res.facts }));
+      setCandidates(res.persons);
+      const c: Record<number, boolean> = {};
+      res.persons.forEach((_, i) => { c[i] = true; });
+      setChosen(c);
+      toast.success('抽取完成', '请核对下面的项目信息和人员，确认无误后保存（AI 可能出错）。');
+    } catch (err) {
+      toast.error('抽取失败', err instanceof Error ? err.message : String(err));
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  const saveFacts = async () => {
+    if (!targetProjectId) {
+      toast.warning('请先选择项目', '项目结构化信息要挂到某个项目上。');
+      return;
+    }
+    await sendBg({ type: 'projects.update', payload: { id: targetProjectId, patch: { facts } } });
+    toast.success('项目结构化信息已保存', '下次报名生成草稿时会作为高优先上下文。');
+  };
+
+  const savePersons = async () => {
+    let n = 0;
+    for (let i = 0; i < candidates.length; i++) {
+      if (!chosen[i]) continue;
+      const p = candidates[i]!;
+      await sendBg({ type: 'persons.create', payload: { displayName: p.displayName, role: p.role, fields: p.fields } });
+      n++;
+    }
+    toast.success(`已添加 ${n} 个人员`);
+    setCandidates([]);
+    setChosen({});
+  };
+
+  return (
+    <details className="border border-border rounded-md">
+      <summary className="cursor-pointer px-3 py-2 text-sm font-medium inline-flex items-center gap-1.5"><Upload className="w-4 h-4" />从文件导入项目信息 / 人员（结构化抽取）</summary>
+      <div className="p-3 flex flex-col gap-3 border-t border-border">
+        <p className="text-xs text-muted-foreground">
+          上传一份 BP / 产品介绍 / 团队介绍（PDF / Word / MD / TXT），AI 抽取项目结构化事实 + 团队成员，
+          <strong>你确认后再保存</strong>。也可以不传文件、直接手填下面的项目信息。
+        </p>
+        <label className="inline-block">
+          <input type="file" accept=".pdf,.docx,.md,.txt" onChange={onFile} disabled={busy} className="hidden" />
+          <span className="text-xs text-primary cursor-pointer hover:underline">{busy ? '抽取中…' : '+ 选择文件抽取'}</span>
+        </label>
+
+        <div className="flex flex-col gap-2">
+          <span className="text-sm font-medium">项目结构化信息</span>
+          <select value={targetProjectId} onChange={(e) => setTargetProjectId(e.target.value)} className="px-3 py-2 border border-border rounded-md bg-background text-sm">
+            <option value="">（选择要挂到的项目）</option>
+            {projects.map((p) => <option key={p.id} value={p.id}>{p.name}</option>)}
+          </select>
+          <div className="grid grid-cols-2 gap-2">
+            {FACT_LABELS.filter((f) => !f.long).map(({ key, label }) => (
+              <Field key={key} label={label} value={facts[key] ?? ''} setValue={(v) => setFactField(key, v)} />
+            ))}
+          </div>
+          {FACT_LABELS.filter((f) => f.long).map(({ key, label }) => (
+            <label key={key} className="flex flex-col gap-1 text-sm">
+              <span className="text-xs text-muted-foreground">{label}</span>
+              <textarea value={facts[key] ?? ''} onChange={(e) => setFactField(key, e.target.value)} rows={2} className="px-3 py-2 border border-border rounded-md bg-background text-sm" />
+            </label>
+          ))}
+          <button onClick={saveFacts} className="self-start px-3 py-1.5 bg-primary text-primary-foreground rounded text-sm">保存项目结构化信息</button>
+        </div>
+
+        {candidates.length > 0 && (
+          <div className="flex flex-col gap-2 border-t border-border pt-3">
+            <span className="text-sm font-medium">抽取到的团队成员（勾选后添加为人员档案）</span>
+            <ul className="flex flex-col gap-1">
+              {candidates.map((c, i) => (
+                <li key={i} className="flex items-center gap-2 text-sm">
+                  <input type="checkbox" checked={!!chosen[i]} onChange={() => setChosen((m) => ({ ...m, [i]: !m[i] }))} />
+                  <span>{c.displayName}{c.role ? <span className="text-muted-foreground"> · {c.role}</span> : null}
+                    {Object.keys(c.fields).length ? <span className="text-xs text-muted-foreground"> · {Object.entries(c.fields).map(([k, v]) => `${k}:${v}`).join(' ')}</span> : null}
+                  </span>
+                </li>
+              ))}
+            </ul>
+            <button onClick={savePersons} className="self-start px-3 py-1.5 bg-primary text-primary-foreground rounded text-sm">添加选中人员</button>
+          </div>
+        )}
+      </div>
+    </details>
   );
 }
 
