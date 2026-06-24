@@ -320,6 +320,26 @@ export interface Person {
 }
 
 /**
+ * V0.4.0 knowledge graph: a portable seed bundle for NON-DESTRUCTIVE bulk import.
+ * Used to load people + project facts extracted from local files into the graph
+ * WITHOUT wiping existing data (unlike a full backup restore). Project matched by
+ * name (created if absent); persons deduped by displayName (fields merged).
+ */
+export interface GraphSeed {
+  project?: {
+    name: string;
+    description?: string;
+    facts?: ProjectFacts;
+  };
+  persons?: Array<{
+    displayName: string;
+    role?: string;
+    fields?: Partial<Record<PersonFieldKey, string>>;
+    notes?: string;
+  }>;
+}
+
+/**
  * Tag categories for project assets. Picked by the user at upload time and
  * used by the asset-to-field matcher to find the right file for a given
  * upload field on a form. V1 supports just these three; we can extend to

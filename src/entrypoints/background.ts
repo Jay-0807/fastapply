@@ -22,6 +22,7 @@ import type { Message, StreamingEvent } from '@/lib/messages/types';
 import { generateDraft, generateBatchDrafts } from '@/lib/claude/client';
 import { resolvePersonalFills, type PersonalFillResolution } from '@/lib/graph/person-fields';
 import { deriveEventType, deriveTopicTags } from '@/lib/graph/event-similarity';
+import { importGraphSeed } from '@/lib/graph/seed-import';
 import { scanHybrid } from '@/lib/fields/semantic/orchestrate';
 import type { SemanticLLMConfig } from '@/lib/fields/semantic/extract';
 import type { ControlManifestEntry, ScanResult } from '@/lib/fields/semantic/types';
@@ -234,6 +235,8 @@ async function handle(msg: Message): Promise<unknown> {
     // ===== V0.4.0 knowledge graph: structured fact extraction from a dropped file =====
     case 'projectFacts.extract':
       return extractProjectFactsFromText(msg.payload.text);
+    case 'graph.importSeed':
+      return importGraphSeed(msg.payload.seed);
     default: {
       const _exhaustive: never = msg;
       throw new Error(`Unhandled message: ${(_exhaustive as { type: string }).type}`);

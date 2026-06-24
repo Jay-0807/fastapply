@@ -1,7 +1,7 @@
 // Typed message bus between UI surfaces (popup / sidepanel / options / content)
 // and the background service worker. All cross-context calls go through this.
 
-import type { DetectedField, EventContext, Project, QARecord, AppSettings, LLMProviderType, ScanMode, Person, ProjectFacts } from '@/lib/db/types';
+import type { DetectedField, EventContext, Project, QARecord, AppSettings, LLMProviderType, ScanMode, Person, ProjectFacts, GraphSeed } from '@/lib/db/types';
 
 export type Message =
   | { type: 'projects.list' }
@@ -115,7 +115,9 @@ export type Message =
   // ===== V0.4.0 knowledge graph: structured fact extraction from a dropped file =====
   // Returns { facts: ProjectFacts; persons: ExtractedPersonCandidate[] } — CANDIDATES
   // for the user to confirm/edit before they're written to the graph.
-  | { type: 'projectFacts.extract'; payload: { text: string } };
+  | { type: 'projectFacts.extract'; payload: { text: string } }
+  // Non-destructive bulk seed import (project facts + person profiles). Returns SeedImportResult.
+  | { type: 'graph.importSeed'; payload: { seed: GraphSeed } };
 
 // Re-export so UI imports stay co-located with the message contracts.
 export type { ProjectFacts };

@@ -189,6 +189,24 @@ function PeoplePane() {
     toast.info('已删除');
   };
 
+  // Non-destructive bulk import of a graph seed JSON (project facts + people),
+  // e.g. one generated from local files. Merges; never wipes existing data.
+  const onSeedFile = async (e: React.ChangeEvent<HTMLInputElement>) => {
+    const file = e.target.files?.[0];
+    e.target.value = '';
+    if (!file) return;
+    try {
+      const seed = JSON.parse(await file.text());
+      const r = await sendBg<{ projectCreated: boolean; projectUpdated: boolean; personsCreated: number; personsUpdated: number }>(
+        { type: 'graph.importSeed', payload: { seed } },
+      );
+      const proj = r.projectCreated ? '新建项目' : r.projectUpdated ? '更新项目' : '未改项目';
+      toast.success('知识图谱种子已导入', `${proj}；人员 +${r.personsCreated} 新建 / ${r.personsUpdated} 更新（非破坏性，可重复导入）`);
+    } catch (err) {
+      toast.error('种子导入失败', err instanceof Error ? err.message : String(err));
+    }
+  };
+
   return (
     <div className="flex flex-col gap-4 max-w-3xl">
       <div>
@@ -197,6 +215,14 @@ function PeoplePane() {
           把常用参赛 / 联系人的个人信息存一次。报名时在侧栏勾选参与的人，姓名 / 手机 / 邮箱等会
           <strong>自动回填真实信息</strong>（AI 不代写个人信息，提交前你核对）。所有数据仅存本地。
         </p>
+      </div>
+
+      <div className="flex items-center gap-3 rounded-md border border-border p-3">
+        <label className="inline-block">
+          <input type="file" accept="application/json,.json" onChange={onSeedFile} className="hidden" />
+          <span className="text-xs text-primary cursor-pointer hover:underline inline-flex items-center gap-1.5"><Upload className="w-3.5 h-3.5" />导入知识图谱种子 (JSON)</span>
+        </label>
+        <span className="text-xs text-muted-foreground">一次性导入从本地文件抽取好的项目信息 + 人员（非破坏性合并，可重复导入；按项目名 / 人名去重）。</span>
       </div>
 
       <StructuredImport projects={projects} />
