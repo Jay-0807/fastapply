@@ -1,8 +1,8 @@
 # ApplyForge — 产品需求文档（PRD）
 
 > **代号**：ApplyForge — "锻造你的每一次申报"
-> **当前版本**：v0.4.0（结构化知识图谱：人员实体 + 项目/赛事关联 + 图谱感知检索 · 2026-06-24）
-> **文档版本**：PRD r13（r12 + §6 数据模型升至 Dexie v7 / persons 表 / facts / eventType / personIds；§9 加 V0.4.0 迭代条目；§4 加人员档案 tab · 2026-06-24）
+> **当前版本**：v0.4.1（结构化知识图谱：人员实体 + 项目/赛事关联 + 图谱感知检索；非破坏性种子导入 + facts 编辑修复 · 2026-06-24）
+> **文档版本**：PRD r14（r13 + §9 加 V0.4.1 种子导入/facts 编辑条目 · 2026-06-24）
 > **PM**：jayyangstudy@gmail.com
 > **状态**：✅ 已开发，迭代中
 > **代码仓库**：`D:\cursor_project\projects\project_application_google_chrome_extension\`
@@ -638,6 +638,15 @@ client.ts
 - **160 测试通过**（基线 131 + 新增 29）、compile / lint clean、build 2.96 MB。
 
 ⚠️ **诚实边界**：检索按结构化属性相似度，不引入 embeddings（保持 ADR-003 本地无后端）；本地文件抽取需人工确认；真实表单回填准确度真值留人工真机 dogfood（与 V2.3-V2.8/V0.3.0 一致）；多人表单"队员1/队员2"逐字段映射未做（MVP 用主联系人 + 回退）。
+
+### V0.4.1 (2026-06-24) — 非破坏性种子导入 + facts 编辑修复（真实数据落地）
+
+用真实数据（萤火虫 Firefly 项目 + 两位团队成员）跑通知识图谱，补两个能力：
+
+- **非破坏性种子导入** `graph.importSeed`（`graph/seed-import.ts` + Options 人员档案「导入知识图谱种子(JSON)」）：批量灌 `{project, persons}` **合并入库不清库**（区别于 backup 全量恢复的破坏式导入）。项目按 name 去重（facts 深合并、`extra` 也深合并）、人员按 displayName 去重（fields 合并、incoming 覆盖），导入的人 union 进 `project.memberIds`；幂等可重复导入。配 6 测试。
+- **facts 编辑框选项目即载入现有 facts**：修掉"选中项目→保存会把 facts 清空"的坑（编辑框原本不载入已存 facts）；ref 守卫防 `projects` live-query 刷新覆盖正在改的值。
+- **实战教训（已进 CLAUDE.md 铁律）**：① 真实人员 PII + 项目具体数据的种子 JSON **写到公开仓库之外 + 直接交付用户、绝不 git add**（本仓 public）——隐私边界从"数据流每跳"延伸到"git 边界"；② **facts 要密度**——`formatProjectFacts` 把每个 facts 字段逐条塞进**每次**草稿 prompt，长论述（多页架构 / 三套财测）应归 RAG 文档按需检索，facts 只留高密度短句（实测把 metrics 700 字 / techStack 900 字精简到 ~140 字）。
+- **165 测试通过**、compile / lint clean、build 2.96 MB。
 
 ---
 

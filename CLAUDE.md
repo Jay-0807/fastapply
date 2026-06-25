@@ -24,6 +24,9 @@ WXT 0.19（Chrome MV3）· React 18 · TypeScript 5.6（strict + `exactOptionalP
 - **个人信息回填** `graph/person-fields.ts`：`mapLabelToPersonFieldKey`（email/phone/idNumber 等具体族**先于** name 匹配，否则 ID 号误进 name）+ `resolvePersonalFills`（主联系人优先 + 回退；只回填本人已存值；**永不碰 OTP**）。多人表单"队员N"逐字段映射未做（MVP 用主联系人）。
 - **项目 facts 注入** `prompts.ts formatProjectFacts`：空 facts → 空串（老项目 prompt 字节不变，无回归）。
 - **结构化抽取** `background.extractProjectFactsFromText`：丢文件 → LLM 抽 facts+人员候选 → **返回候选、UI 确认后才入库**（不盲信 LLM，同 detectEventFromPage 外发姿态）。
+- **非破坏性种子导入** `graph/seed-import.ts importGraphSeed`（msg `graph.importSeed`，Options 人员档案「导入知识图谱种子(JSON)」）：批量灌 `{project, persons}`，**不清库**（区别于 backup 全量恢复的破坏式导入）；项目按 name 去重（facts 深合并、incoming 覆盖；extra 也深合并）、人员按 displayName 去重（fields 合并），导入的人 union 进 project.memberIds；幂等可重复导入。配 `facts` 编辑框「选项目即载入现有 facts」（ref 守卫防 live-query 刷新覆盖在改的值）。
+- **⚠️ 真实 PII 绝不进公开仓**（2026-06-24，本仓 public）：从用户本地文件抽出的人员真实信息（身份证/手机/邮箱）+ 项目具体数据 → **种子 JSON 写到仓库之外**（如 `D:\cursor_project\applyforge-seed-*.json`）+ 直接交付用户，**永不 git add**。代码（importGraphSeed 等）可提交，数据不行。隐私边界从"数据流每跳"延伸到"git 边界"。
+- **facts 是高频上下文要密度**：`formatProjectFacts` 把每个 facts 字段**逐条原样塞进每次草稿 prompt**；长论述（多页架构/三套财测）放**项目文档(RAG 按需检索)**，facts 只留高密度短句。导入真实项目时别把整段 BP 灌进 metrics/techStack（会每次撑爆 prompt）。
 - **Dexie v6→v7 迁移**：只重定义变更的 store（persons 新表 / eventContexts 加 eventType 索引 / qaRecords 加 `*personIds` multiEntry），**未重定义的表 Dexie 自动 carry-forward 不会丢**；`upgrade()` 幂等回填（`=== undefined` 守卫）。备份 formatVersion 2 含 persons（兼容 v1 老备份）。改 schema 仍走"§6 + schema.ts migration + tests"三件套。
 
 ## 字段扫描器 `src/lib/fields/field-scanner.ts` —— 核心资产，最容易踩坑
