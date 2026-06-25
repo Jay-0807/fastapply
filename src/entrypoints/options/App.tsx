@@ -5,7 +5,7 @@
 // This file ships the *core skeleton*. Detailed sub-pages (Project editor, Q&A history
 // browser, backup UI) are stubbed where indicated and to be expanded in follow-up commits.
 
-import { useEffect, useMemo, useState } from 'react';
+import { useEffect, useMemo, useRef, useState } from 'react';
 import { useLiveQuery } from 'dexie-react-hooks';
 import {
   Flame,
@@ -333,6 +333,19 @@ function StructuredImport({ projects }: { projects: Project[] }) {
   const [facts, setFacts] = useState<ProjectFacts>({});
   const [candidates, setCandidates] = useState<PersonCandidate[]>([]);
   const [chosen, setChosen] = useState<Record<number, boolean>>({});
+
+  // Load the selected project's EXISTING facts into the editor so the user can
+  // edit/trim them in place (otherwise selecting a project + saving would wipe
+  // its facts to whatever's in the box). The ref guard makes this fire only on
+  // an actual selection change — a background `projects` live-query refresh
+  // won't clobber in-progress edits.
+  const loadedProjectIdRef = useRef<string>('');
+  useEffect(() => {
+    if (loadedProjectIdRef.current === targetProjectId) return;
+    loadedProjectIdRef.current = targetProjectId;
+    const selected = projects.find((p) => p.id === targetProjectId);
+    setFacts(selected?.facts ?? {});
+  }, [targetProjectId, projects]);
 
   const setFactField = (k: typeof FACT_LABELS[number]['key'], v: string) =>
     setFacts((prev) => {
