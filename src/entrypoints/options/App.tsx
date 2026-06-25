@@ -201,7 +201,10 @@ function PeoplePane() {
         { type: 'graph.importSeed', payload: { seed } },
       );
       const proj = r.projectCreated ? '新建项目' : r.projectUpdated ? '更新项目' : '未改项目';
-      toast.success('知识图谱种子已导入', `${proj}；人员 +${r.personsCreated} 新建 / ${r.personsUpdated} 更新（非破坏性，可重复导入）`);
+      toast.success(
+        '知识图谱种子已导入',
+        `${proj}；人员 +${r.personsCreated} 新建 / ${r.personsUpdated} 更新。注意：原始文档(RAG)与图片/Logo/Pitch 资产不含在种子里，如需仍要到「项目档案/项目资产」单独上传。`,
+      );
     } catch (err) {
       toast.error('种子导入失败', err instanceof Error ? err.message : String(err));
     }
@@ -217,12 +220,16 @@ function PeoplePane() {
         </p>
       </div>
 
-      <div className="flex items-center gap-3 rounded-md border border-border p-3">
-        <label className="inline-block">
+      <div className="flex flex-col gap-1.5 rounded-md border border-border p-3">
+        <label className="inline-block self-start">
           <input type="file" accept="application/json,.json" onChange={onSeedFile} className="hidden" />
           <span className="text-xs text-primary cursor-pointer hover:underline inline-flex items-center gap-1.5"><Upload className="w-3.5 h-3.5" />导入知识图谱种子 (JSON)</span>
         </label>
         <span className="text-xs text-muted-foreground">一次性导入从本地文件抽取好的项目信息 + 人员（非破坏性合并，可重复导入；按项目名 / 人名去重）。</span>
+        <span className="text-xs text-amber-600 dark:text-amber-500 inline-flex items-start gap-1.5">
+          <AlertTriangle className="w-3.5 h-3.5 mt-0.5 shrink-0" />
+          <span>种子只含<strong>项目事实 + 人员</strong>；项目的<strong>原始文档（用于 RAG 检索）</strong>和<strong>图片 / Logo / Pitch 等资产（用于文件字段）</strong>不在内 —— 导入后仍需到「项目档案」「项目资产」单独上传。</span>
+        </span>
       </div>
 
       <StructuredImport projects={projects} />
