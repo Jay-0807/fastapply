@@ -29,6 +29,13 @@ WXT 0.19（Chrome MV3）· React 18 · TypeScript 5.6（strict + `exactOptionalP
 - **facts 是高频上下文要密度**：`formatProjectFacts` 把每个 facts 字段**逐条原样塞进每次草稿 prompt**；长论述（多页架构/三套财测）放**项目文档(RAG 按需检索)**，facts 只留高密度短句。导入真实项目时别把整段 BP 灌进 metrics/techStack（会每次撑爆 prompt）。
 - **Dexie v6→v7 迁移**：只重定义变更的 store（persons 新表 / eventContexts 加 eventType 索引 / qaRecords 加 `*personIds` multiEntry），**未重定义的表 Dexie 自动 carry-forward 不会丢**；`upgrade()` 幂等回填（`=== undefined` 守卫）。备份 formatVersion 2 含 persons（兼容 v1 老备份）。改 schema 仍走"§6 + schema.ts migration + tests"三件套。
 
+## 项目管理 + 一键导入 + 按项目归属（V0.4.1，2026-06-26）
+- **级联删除覆盖所有 owned 表**（`src/lib/db/project-ops.ts deleteProjectCascade`）：删项目 = chunks(doc+qa) + documents + qaRecords + **projectAssets**（曾漏 assets 留孤儿，本轮修）+ project 行，一个 rw 事务；**persons 不删**（跨项目共享）。删除不可逆 → "无孤儿 / 不误删他项目 / 留共享 persons"是承重不变式，配回归测试。UI 走**带真实数量的二次确认**（`projectDeletionImpact`）。`indexDocument` 写 chunks 包进"查 doc 在否 + 写"同一事务，防与 cascade 竞态留孤儿 chunk。
+- **一键多格式导入** `options BulkImportWizard`（项目档案首页）：drop pdf/docx/**pptx/xlsx**/img/md/txt → 文本 `parseDocument`、图片转资产 → 合并文本一次 `projectFacts.extract`（AI 归类 facts+人员）→ **确认页**（不盲信 LLM，同 detectEventFromPage 姿态）→ 落库。pptx/xlsx 用 **jszip 正则抽 `<a:t>`/`<t>`**（`parsers collectTagText`/`decodeXmlEntities` 纯函数可测，避开 SheetJS 重依赖）；空文本/超 25MB 跳过+标记。
+- **人员/经验库按项目** many-to-many via `Project.memberIds`（一人可属多项目）：`ProjectScopePicker` 共享筛选（OptionsApp 提升 `selectedProjectId`，删项目后 useEffect 回退 '' 防悬空）；人员用**项目标签**管理归属；经验库按 `QARecord.projectId` 过滤。
+- **⚠️ 去重循环必须回灌新建项**（Code GAN 两次踩中：seed-import 已守、bulk-import 本轮补）：凡"循环内 `create` + 后续按 displayName 去重"，新建后必须把该项 push 进比对集，否则同批重名候选建出重复行。
+- **导入 commit 可续传**（非事务多步）：建项目后 `setTargetMode('existing')+pin id`、每文件落库标 `committed`，中途失败重试不重复传文档/资产、不再建空项目。
+
 ## 字段扫描器 `src/lib/fields/field-scanner.ts` —— 核心资产，最容易踩坑
 表单分两大形态，**两条路径都必须支持**：
 - **ARIA 框架表单**（Google Forms / Qualtrics）：`role=radio/checkbox/listbox` 的 styled div —— 早期只支持这种。

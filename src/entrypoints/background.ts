@@ -23,6 +23,7 @@ import { generateDraft, generateBatchDrafts } from '@/lib/claude/client';
 import { resolvePersonalFills, type PersonalFillResolution } from '@/lib/graph/person-fields';
 import { deriveEventType, deriveTopicTags } from '@/lib/graph/event-similarity';
 import { importGraphSeed } from '@/lib/graph/seed-import';
+import { deleteProjectCascade } from '@/lib/db/project-ops';
 import { scanHybrid } from '@/lib/fields/semantic/orchestrate';
 import type { SemanticLLMConfig } from '@/lib/fields/semantic/extract';
 import type { ControlManifestEntry, ScanResult } from '@/lib/fields/semantic/types';
@@ -91,12 +92,9 @@ async function handle(msg: Message): Promise<unknown> {
       await db.projects.update(msg.payload.id, { ...msg.payload.patch, updatedAt: Date.now() });
       return db.projects.get(msg.payload.id);
     case 'projects.delete':
-      await db.transaction('rw', db.projects, db.documents, db.chunks, db.qaRecords, async () => {
-        await db.chunks.where('projectId').equals(msg.payload.id).delete();
-        await db.documents.where('projectId').equals(msg.payload.id).delete();
-        await db.qaRecords.where('projectId').equals(msg.payload.id).delete();
-        await db.projects.delete(msg.payload.id);
-      });
+      // Cascade-delete the project + everything it owns (docs / chunks / records
+      // / assets), atomically, leaving no orphans. See deleteProjectCascade.
+      await deleteProjectCascade(msg.payload.id);
       return { ok: true };
     case 'documents.upload':
       return uploadDocument(msg.payload);
@@ -456,10 +454,19 @@ async function indexDocument(doc: DocumentRecord): Promise<void> {
       createdAt: Date.now(),
       metadata: { chunkIndex: i, sourceFilename: doc.filename },
     }));
-    await db.chunks.bulkAdd(chunkRecords);
-    // Explicit success update so reindex (which sets pending) flips back to parsed.
-    await db.documents.update(doc.id, { parseStatus: 'parsed', parseError: null });
-    broadcast({ kind: 'documents.parseProgress', documentId: doc.id, progress: 1 });
+    // GAN fix: a concurrent project delete could orphan these chunks (the cascade
+    // ran while we were chunking). Do the existence-check + chunk write in ONE
+    // transaction — Dexie serializes it against deleteProjectCascade since both
+    // touch documents+chunks — so if the doc was deleted meanwhile, we skip and
+    // never resurrect orphan chunks.
+    let wrote = false;
+    await db.transaction('rw', db.documents, db.chunks, async () => {
+      if (!(await db.documents.get(doc.id))) return; // deleted mid-index → bail
+      await db.chunks.bulkAdd(chunkRecords);
+      await db.documents.update(doc.id, { parseStatus: 'parsed', parseError: null });
+      wrote = true;
+    });
+    if (wrote) broadcast({ kind: 'documents.parseProgress', documentId: doc.id, progress: 1 });
   } catch (err) {
     await db.documents.update(doc.id, {
       parseStatus: 'failed',

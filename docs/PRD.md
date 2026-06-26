@@ -1,8 +1,8 @@
 # ApplyForge — 产品需求文档（PRD）
 
 > **代号**：ApplyForge — "锻造你的每一次申报"
-> **当前版本**：v0.4.1（结构化知识图谱：人员实体 + 项目/赛事关联 + 图谱感知检索；非破坏性种子导入 + facts 编辑修复 · 2026-06-24）
-> **文档版本**：PRD r14（r13 + §9 加 V0.4.1 种子导入/facts 编辑条目 · 2026-06-24）
+> **当前版本**：v0.4.2（项目删除级联 + 一键多格式 AI 导入 + 人员/经验库按项目归属 · 2026-06-26）
+> **文档版本**：PRD r15（r14 + §9 加 V0.4.2 项目管理/一键导入/按项目归属条目 · 2026-06-26）
 > **PM**：jayyangstudy@gmail.com
 > **状态**：✅ 已开发，迭代中
 > **代码仓库**：`D:\cursor_project\projects\project_application_google_chrome_extension\`
@@ -647,6 +647,16 @@ client.ts
 - **facts 编辑框选项目即载入现有 facts**：修掉"选中项目→保存会把 facts 清空"的坑（编辑框原本不载入已存 facts）；ref 守卫防 `projects` live-query 刷新覆盖正在改的值。
 - **实战教训（已进 CLAUDE.md 铁律）**：① 真实人员 PII + 项目具体数据的种子 JSON **写到公开仓库之外 + 直接交付用户、绝不 git add**（本仓 public）——隐私边界从"数据流每跳"延伸到"git 边界"；② **facts 要密度**——`formatProjectFacts` 把每个 facts 字段逐条塞进**每次**草稿 prompt，长论述（多页架构 / 三套财测）应归 RAG 文档按需检索，facts 只留高密度短句（实测把 metrics 700 字 / techStack 900 字精简到 ~140 字）。
 - **165 测试通过**、compile / lint clean、build 2.96 MB。
+
+### V0.4.2 (2026-06-26) — 项目管理 + 一键多格式导入 + 人员/经验库按项目归属
+
+真机 dogfood 暴露 3 个缺口，一轮交付（全程对抗式 GAN，15 agent 4 视角 review→verify，10 confirmed 全修）：
+
+- **项目删除 + 防误删**：每个项目卡片「🗑 删除」+ **带真实数量的二次确认**（X 文档 / Y 记录 / Z 资产）。后端抽 `src/lib/db/project-ops.ts deleteProjectCascade` —— 修掉**删项目漏删 projectAssets 留孤儿**的 bug；级联覆盖 chunks / documents / qaRecords / **projectAssets** / project，一个事务，**persons 不删**（跨项目共享）。配 3 回归测试（无孤儿 / 不误删他项目 / 留共享人员）。
+- **一键多格式 AI 导入**（项目档案首页「✨一键导入资料」）：一次丢 **pdf / docx / pptx / xlsx / 图片 / md / txt** → 文本走 `parseDocument`、图片转资产候选 → 合并文本一次 `projectFacts.extract`（AI 归类项目事实 + 人员）→ **确认页**（事实可改 / 人员勾选 / 文件归类 / 选目标项目）→ 落库（复用 projects / persons / documents / assets 消息）。pptx / xlsx 用 **jszip 轻量抽取**（`parsers collectTagText` / `decodeXmlEntities` 纯函数，避开 SheetJS 重依赖）；空文本 / 超 25MB 文件跳过 + 标记。**坚持"AI 归类 → 你确认 → 才落库"**（不盲信 LLM）。
+- **人员档案 + 经验库按项目归属**：many-to-many via `Project.memberIds`（一人可属多项目）；共享 `ProjectScopePicker`（按项目筛选，删项目后自动回退"全部"防悬空）；人员用**项目标签**直接管理归属；经验库按 `QARecord.projectId` 过滤。
+- **Code GAN 修掉 7 个真 bug**（各配修法）：① 导入同批重名候选建重复 Person（去重快照循环内未回灌 → 对齐 seed-import 守卫）② commit 非事务、失败重试重复传文档/资产 + 'new' 重试再建空项目（pin 已建项目 + 每文件 `committed` 标记续传）③ `targetProjectId` 不随 live-query 同步导致"现有项目"导入卡死 ④ 级联删除 vs 异步 `indexDocument` 竞态留孤儿 chunk（存在性检查进同一事务）⑤ 大文件主线程解析冻结（25MB 上限）⑥ 删当前筛选项目后筛选器悬空 ⑦ 空文本文档误标 ✅ 不进 RAG。
+- **174 测试通过**（+9：project-ops 3 + parsers 6）、compile / lint clean、build 2.98 MB（jszip 懒加载）。
 
 ---
 

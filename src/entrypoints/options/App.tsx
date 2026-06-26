@@ -23,6 +23,8 @@ import {
   Upload,
 } from 'lucide-react';
 import { db } from '@/lib/db/schema';
+import { projectDeletionImpact } from '@/lib/db/project-ops';
+import type { FileKind } from '@/lib/parsers';
 import type { Project, AppSettings, LLMConfig, ScanMode, Person, PersonFieldKey, ProjectFacts } from '@/lib/db/types';
 import type { Message } from '@/lib/messages/types';
 import { useToast } from '@/components/ErrorToast';
@@ -71,6 +73,16 @@ async function sendBg<T = unknown>(message: Message): Promise<T> {
 export function OptionsApp() {
   const settings = useLiveQuery(() => db.appSettings.get('singleton'), []);
   const [tab, setTab] = useState<Tab>('projects');
+  // V0.4.1: 人员档案 + 经验库 scope to a project. Shared across both tabs so the
+  // selection is consistent ('' = 全部项目). People belong to projects via
+  // Project.memberIds (many-to-many); history via QARecord.projectId.
+  const [selectedProjectId, setSelectedProjectId] = useState<string>('');
+  const projectIds = useLiveQuery(() => db.projects.toArray().then((ps) => ps.map((p) => p.id)), []);
+  // GAN fix: if the scoped project gets deleted, don't leave the filter stuck on a
+  // dangling id (which shows an empty People/History list) — fall back to 全部.
+  useEffect(() => {
+    if (selectedProjectId && projectIds && !projectIds.includes(selectedProjectId)) setSelectedProjectId('');
+  }, [projectIds, selectedProjectId]);
   // Three-state boot machine. useLiveQuery returns undefined BOTH while loading
   // AND when the row is absent, so we can't infer onboarding state from it
   // alone — we do an explicit first fetch.
@@ -126,8 +138,8 @@ export function OptionsApp() {
       </aside>
       <main className="flex-1 p-6 overflow-y-auto">
         {tab === 'projects' && <ProjectsPane />}
-        {tab === 'people' && <PeoplePane />}
-        {tab === 'history' && <HistoryPane />}
+        {tab === 'people' && <PeoplePane selectedProjectId={selectedProjectId} setSelectedProjectId={setSelectedProjectId} />}
+        {tab === 'history' && <HistoryPane selectedProjectId={selectedProjectId} setSelectedProjectId={setSelectedProjectId} />}
         {tab === 'settings' && <SettingsPane settings={settings} />}
         {tab === 'backup' && <BackupPane />}
       </main>
@@ -143,6 +155,23 @@ function TabBtn({ label, active, onClick }: { label: string; active: boolean; on
     >
       {label}
     </button>
+  );
+}
+
+/** Shared project scope selector for the 人员档案 / 经验库 tabs. '' = 全部项目. */
+function ProjectScopePicker({ projects, value, onChange }: { projects: Project[]; value: string; onChange: (v: string) => void }) {
+  return (
+    <label className="flex items-center gap-2 text-sm">
+      <span className="text-muted-foreground inline-flex items-center gap-1"><Folder className="w-3.5 h-3.5" />按项目</span>
+      <select
+        value={value}
+        onChange={(e) => onChange(e.target.value)}
+        className="px-2 py-1 border border-border rounded-md bg-background text-sm"
+      >
+        <option value="">全部项目</option>
+        {projects.map((p) => <option key={p.id} value={p.id}>{p.name}</option>)}
+      </select>
+    </label>
   );
 }
 
@@ -166,17 +195,32 @@ const FACT_LABELS: { key: 'oneLiner' | 'sector' | 'stage' | 'location' | 'teamSi
   { key: 'techStack', label: '技术栈' },
 ];
 
-function PeoplePane() {
+function PeoplePane({ selectedProjectId, setSelectedProjectId }: { selectedProjectId: string; setSelectedProjectId: (v: string) => void }) {
   const persons = useLiveQuery(() => db.persons.orderBy('createdAt').reverse().toArray(), []) ?? [];
   const projects = useLiveQuery(() => db.projects.toArray(), []) ?? [];
   const toast = useToast();
   const [creating, setCreating] = useState(false);
   const [editingId, setEditingId] = useState<string | null>(null);
 
+  // V0.4.1: scope the list to the selected project's members ('' = 全部).
+  const selectedProject = projects.find((p) => p.id === selectedProjectId);
+  const visiblePersons = selectedProjectId
+    ? persons.filter((p) => (selectedProject?.memberIds ?? []).includes(p.id))
+    : persons;
+
+  // Add/remove a person to/from a project's membership (many-to-many).
+  const setMembershipFor = async (proj: Project, personId: string, member: boolean) => {
+    const cur = proj.memberIds ?? [];
+    const memberIds = member ? [...new Set([...cur, personId])] : cur.filter((id) => id !== personId);
+    await sendBg({ type: 'projects.update', payload: { id: proj.id, patch: { memberIds } } });
+  };
+
   const createPerson = async (data: PersonCandidate & { notes: string }) => {
-    await sendBg({ type: 'persons.create', payload: data });
+    const created = await sendBg<Person>({ type: 'persons.create', payload: data });
+    // If a project is in scope, auto-add the new person to it.
+    if (selectedProject && created?.id) await setMembershipFor(selectedProject, created.id, true);
     setCreating(false);
-    toast.success('已添加人员');
+    toast.success('已添加人员', selectedProject ? `已加入「${selectedProject.name}」` : undefined);
   };
   const updatePerson = async (id: string, data: PersonCandidate & { notes: string }) => {
     await sendBg({ type: 'persons.update', payload: { id, patch: data } });
@@ -213,10 +257,16 @@ function PeoplePane() {
   return (
     <div className="flex flex-col gap-4 max-w-3xl">
       <div>
-        <h2 className="text-xl font-semibold flex items-center gap-2"><Users className="w-5 h-5" />人员档案</h2>
+        <div className="flex items-center justify-between gap-3 flex-wrap">
+          <h2 className="text-xl font-semibold flex items-center gap-2"><Users className="w-5 h-5" />人员档案</h2>
+          {projects.length > 0 && <ProjectScopePicker projects={projects} value={selectedProjectId} onChange={setSelectedProjectId} />}
+        </div>
         <p className="text-sm text-muted-foreground mt-1">
           把常用参赛 / 联系人的个人信息存一次。报名时在侧栏勾选参与的人，姓名 / 手机 / 邮箱等会
           <strong>自动回填真实信息</strong>（AI 不代写个人信息，提交前你核对）。所有数据仅存本地。
+          {selectedProject
+            ? <> 当前只看「{selectedProject.name}」的成员；下方每人的项目标签可点，控制 ta 属于哪些项目。</>
+            : <> 一个人可同时属于多个项目（用下方项目标签管理）。</>}
         </p>
       </div>
 
@@ -243,13 +293,13 @@ function PeoplePane() {
       )}
 
       <ul className="flex flex-col gap-2">
-        {persons.map((p) => (
+        {visiblePersons.map((p) => (
           <li key={p.id} className="border border-border rounded-md p-3">
             {editingId === p.id ? (
               <PersonForm initial={p} onSave={(d) => updatePerson(p.id, d)} onCancel={() => setEditingId(null)} />
             ) : (
               <div className="flex items-start justify-between gap-2">
-                <div className="text-sm">
+                <div className="text-sm min-w-0">
                   <div className="font-medium">{p.displayName}{p.role ? <span className="text-muted-foreground"> · {p.role}</span> : null}</div>
                   <div className="text-xs text-muted-foreground mt-1 flex flex-wrap gap-x-3 gap-y-0.5">
                     {PERSON_FIELD_LABELS.filter(({ key }) => p.fields[key]).map(({ key, label }) => (
@@ -257,6 +307,27 @@ function PeoplePane() {
                     ))}
                   </div>
                   {p.notes ? <div className="text-xs text-muted-foreground mt-1">备注: {p.notes}</div> : null}
+                  {projects.length > 0 && (
+                    <div className="flex flex-wrap gap-1 mt-2">
+                      {projects.map((proj) => {
+                        const isMember = (proj.memberIds ?? []).includes(p.id);
+                        return (
+                          <button
+                            key={proj.id}
+                            onClick={() => setMembershipFor(proj, p.id, !isMember)}
+                            title={isMember ? `点击移出「${proj.name}」` : `点击加入「${proj.name}」`}
+                            className={`text-[10px] px-1.5 py-0.5 rounded-full border transition-colors ${
+                              isMember
+                                ? 'bg-primary/15 border-primary/40 text-primary'
+                                : 'border-border text-muted-foreground hover:bg-muted/40'
+                            }`}
+                          >
+                            {proj.name}
+                          </button>
+                        );
+                      })}
+                    </div>
+                  )}
                 </div>
                 <div className="flex gap-2 shrink-0">
                   <button onClick={() => setEditingId(p.id)} className="text-xs text-primary hover:underline">编辑</button>
@@ -266,8 +337,12 @@ function PeoplePane() {
             )}
           </li>
         ))}
-        {persons.length === 0 && !creating && (
-          <li className="text-sm text-muted-foreground">还没有人员。点上面「新建人员」或从文件导入。</li>
+        {visiblePersons.length === 0 && !creating && (
+          <li className="text-sm text-muted-foreground">
+            {selectedProject
+              ? <>「{selectedProject.name}」还没有成员。切到「全部项目」给已有人员点项目标签加入，或下面新建。</>
+              : <>还没有人员。点上面「新建人员」或从文件导入。</>}
+          </li>
         )}
       </ul>
     </div>
@@ -618,6 +693,293 @@ function Field({ label, value, setValue, type = 'text', placeholder }: { label: 
   );
 }
 
+// ===========================================================================
+// V0.4.1 — 一键导入资料（多格式 + AI 自动归类 + 确认页）
+// Drop md/word/ppt/excel/image/pdf/txt → parse text formats, route images to
+// assets → ONE LLM call classifies the text corpus into project facts + person
+// candidates → user REVIEWS/edits everything → commit (never blind-trust LLM).
+// Reuses existing messages: projectFacts.extract / projects.* / persons.* /
+// documents.upload / assets.upload.
+// ===========================================================================
+
+type ParsedFile = {
+  file: File;
+  kind: FileKind;
+  text: string;
+  parseError?: string;
+  role: 'document' | 'asset' | 'skip';
+  assetTag: 'photo' | 'logo' | 'pitch';
+  /** GAN fix: set once this file's doc/asset has been written, so a retry after a
+   *  mid-commit failure skips it instead of re-uploading a duplicate. */
+  committed?: boolean;
+};
+
+const MAX_EXTRACT_CHARS = 30000; // cap the corpus fed to the classifier (full text still uploaded for RAG)
+const MAX_PARSE_BYTES = 25 * 1024 * 1024; // skip parsing files larger than this (avoid freezing the options page)
+
+function guessAssetTag(name: string): 'photo' | 'logo' | 'pitch' {
+  const n = name.toLowerCase();
+  if (/logo|标识|标志/.test(n)) return 'logo';
+  if (/pitch|deck|bp|商业计划|路演|融资/.test(n)) return 'pitch';
+  return 'photo';
+}
+
+function BulkImportWizard({ projects }: { projects: Project[] }) {
+  const toast = useToast();
+  const [stage, setStage] = useState<'idle' | 'parsing' | 'review' | 'committing'>('idle');
+  const [progress, setProgress] = useState('');
+  const [files, setFiles] = useState<ParsedFile[]>([]);
+  const [facts, setFacts] = useState<ProjectFacts>({});
+  const [people, setPeople] = useState<{ cand: PersonCandidate & { notes?: string }; include: boolean }[]>([]);
+  const [targetMode, setTargetMode] = useState<'existing' | 'new'>(projects.length ? 'existing' : 'new');
+  const [targetProjectId, setTargetProjectId] = useState<string>(projects[0]?.id ?? '');
+  const [newName, setNewName] = useState('');
+
+  // GAN fix: `projects` is [] on the first render (useLiveQuery) and arrives later;
+  // backfill the target selection so "现有项目" import isn't stuck on an empty id.
+  useEffect(() => {
+    if (projects.length && !targetProjectId) setTargetProjectId(projects[0]!.id);
+  }, [projects, targetProjectId]);
+
+  const reset = () => {
+    setStage('idle'); setProgress(''); setFiles([]); setFacts({}); setPeople([]);
+    setNewName('');
+  };
+
+  const onPick = async (e: React.ChangeEvent<HTMLInputElement>) => {
+    const picked = Array.from(e.target.files ?? []);
+    e.target.value = '';
+    if (!picked.length) return;
+    setStage('parsing');
+    try {
+      const parsers = await import('@/lib/parsers');
+      const parsed: ParsedFile[] = [];
+      for (const file of picked) {
+        const kind = parsers.classifyFileKind(file.name);
+        setProgress(`解析 ${file.name} …`);
+        if (kind === 'image') {
+          parsed.push({ file, kind, text: '', role: 'asset', assetTag: guessAssetTag(file.name) });
+        } else if (kind === 'text') {
+          if (file.size > MAX_PARSE_BYTES) {
+            // GAN fix: oversized files would freeze the main-thread parser — skip + flag.
+            parsed.push({ file, kind, text: '', parseError: `文件过大（${Math.round(file.size / 1048576)}MB），已跳过解析`, role: 'skip', assetTag: 'photo' });
+          } else {
+            try {
+              const text = await parsers.parseDocument(file);
+              // GAN fix: a file that parses to empty (pure-image PDF / numbers-only xlsx)
+              // would upload as a ✅ document that silently contributes nothing to RAG — skip + flag.
+              if (text.trim()) {
+                parsed.push({ file, kind, text, role: 'document', assetTag: 'photo' });
+              } else {
+                parsed.push({ file, kind, text: '', parseError: '未解析出文本（可能纯图片/纯数字），默认跳过', role: 'skip', assetTag: 'photo' });
+              }
+            } catch (err) {
+              parsed.push({ file, kind, text: '', parseError: err instanceof Error ? err.message : String(err), role: 'skip', assetTag: 'photo' });
+            }
+          }
+        } else {
+          parsed.push({ file, kind, text: '', parseError: '不支持的格式', role: 'skip', assetTag: 'photo' });
+        }
+      }
+      setFiles(parsed);
+
+      // AI classify: feed the combined text to the existing extractor → facts + people.
+      const corpus = parsed.filter((f) => f.text).map((f) => `# ${f.file.name}\n${f.text}`).join('\n\n').slice(0, MAX_EXTRACT_CHARS);
+      if (corpus.trim()) {
+        setProgress('AI 正在归类项目信息 + 人员…');
+        const res = await sendBg<ExtractResult>({ type: 'projectFacts.extract', payload: { text: corpus } });
+        setFacts(res.facts ?? {});
+        setPeople((res.persons ?? []).map((cand) => ({ cand, include: true })));
+      }
+      setStage('review');
+    } catch (err) {
+      toast.error('导入解析失败', err instanceof Error ? err.message : String(err));
+      reset();
+    }
+  };
+
+  const setFactField = (k: typeof FACT_LABELS[number]['key'], v: string) =>
+    setFacts((prev) => { const next = { ...prev }; if (v.trim()) next[k] = v; else delete next[k]; return next; });
+
+  const commit = async () => {
+    if (targetMode === 'new' && !newName.trim()) { toast.warning('请填项目名'); return; }
+    if (targetMode === 'existing' && !targetProjectId) { toast.warning('请选择项目'); return; }
+    setStage('committing');
+    try {
+      // 1. resolve / create the target project.
+      let projectId = targetProjectId;
+      if (targetMode === 'new') {
+        setProgress('创建项目…');
+        const created = await sendBg<Project>({ type: 'projects.create', payload: { name: newName.trim(), description: facts.oneLiner ?? '', tags: [] } });
+        projectId = created.id;
+        // GAN fix: pin the created project so a retry after a later failure REUSES it
+        // instead of spawning a second empty project.
+        setTargetMode('existing');
+        setTargetProjectId(projectId);
+      }
+      const existing = await db.projects.get(projectId);
+
+      // 2. facts (merge per-key onto whatever the project already had — idempotent).
+      setProgress('写入项目事实…');
+      await sendBg({ type: 'projects.update', payload: { id: projectId, patch: { facts: { ...(existing?.facts ?? {}), ...facts } } } });
+
+      // 3. people (dedupe by displayName; merge fields), then link membership.
+      const existingPersons = await db.persons.toArray();
+      const memberIds = [...(existing?.memberIds ?? [])];
+      for (const { cand, include } of people) {
+        if (!include || !cand.displayName.trim()) continue;
+        const name = cand.displayName.trim();
+        const dup = existingPersons.find((p) => p.displayName.trim() === name);
+        let pid: string;
+        if (dup) {
+          await sendBg({ type: 'persons.update', payload: { id: dup.id, patch: { fields: { ...dup.fields, ...cand.fields }, role: cand.role || dup.role } } });
+          pid = dup.id;
+        } else {
+          const np = await sendBg<Person>({ type: 'persons.create', payload: { displayName: name, role: cand.role ?? '', fields: cand.fields ?? {}, notes: cand.notes ?? '' } });
+          pid = np.id;
+          // GAN fix: push into the snapshot so a SECOND candidate with the same name
+          // (e.g. the founder named in two dropped docs) merges instead of duplicating.
+          existingPersons.push({ id: pid, displayName: name, role: cand.role ?? '', fields: cand.fields ?? {}, notes: cand.notes ?? '', createdAt: 0, updatedAt: 0 });
+        }
+        if (!memberIds.includes(pid)) memberIds.push(pid);
+      }
+      await sendBg({ type: 'projects.update', payload: { id: projectId, patch: { memberIds } } });
+
+      // 4. documents (text files marked 文档) → RAG; 5. assets (images marked 资产).
+      // GAN fix: skip files already committed on a prior attempt, and mark each done
+      // as it lands, so a mid-commit failure + retry never re-uploads duplicates.
+      let docN = 0, assetN = 0;
+      for (let i = 0; i < files.length; i++) {
+        const f = files[i]!;
+        if (f.committed) continue;
+        if (f.role === 'document' && f.text) {
+          setProgress(`上传文档 ${f.file.name}…`);
+          await sendBg({ type: 'documents.upload', payload: { projectId, filename: f.file.name, mimeType: f.file.type, sizeBytes: f.file.size, text: f.text } });
+          docN++;
+        } else if (f.role === 'asset') {
+          setProgress(`上传资产 ${f.file.name}…`);
+          const bytes = await f.file.arrayBuffer();
+          await sendBg({ type: 'assets.upload', payload: { projectId, filename: f.file.name, mimeType: f.file.type || guessMimeFromName(f.file.name), sizeBytes: f.file.size, tag: f.assetTag, bytes } });
+          assetN++;
+        } else {
+          continue; // skipped file — nothing to mark
+        }
+        setFiles((arr) => arr.map((x, j) => (j === i ? { ...x, committed: true } : x)));
+      }
+
+      const chosenPeople = people.filter((p) => p.include).length;
+      toast.success('一键导入完成', `项目事实已写入；人员 ${chosenPeople} · 文档 ${docN} · 资产 ${assetN}（文档索引完成后即可 RAG）。`);
+      reset();
+    } catch (err) {
+      toast.error('导入提交失败（已提交的部分不会重复，可点确认导入续传）', err instanceof Error ? err.message : String(err));
+      setStage('review');
+    }
+  };
+
+  const factCount = Object.values(facts).filter((v) => (typeof v === 'string' ? v.trim() : v)).length;
+
+  return (
+    <details className="border border-primary/40 bg-primary/5 rounded-md" open={stage !== 'idle'}>
+      <summary className="cursor-pointer px-3 py-2.5 text-sm font-medium inline-flex items-center gap-1.5">
+        <Sparkles className="w-4 h-4 text-primary" />一键导入资料（多格式 · AI 自动归类）
+      </summary>
+      <div className="p-3 flex flex-col gap-3 border-t border-border">
+        {stage === 'idle' && (
+          <>
+            <p className="text-xs text-muted-foreground">
+              一次丢进 BP / 商业计划 / pitch / 团队介绍 / 图片 / 获奖证书等 —— 支持 <strong>pdf · word · ppt · excel · md · txt · 图片</strong>。
+              AI 自动归类成<strong>项目事实 + 人员 + 文档(RAG) + 图片资产</strong>，<strong>你确认后才写入</strong>（不盲信 AI）。
+            </p>
+            <label className="inline-block self-start">
+              <input type="file" multiple accept=".pdf,.docx,.pptx,.xlsx,.csv,.md,.txt,.png,.jpg,.jpeg,.webp,.gif" onChange={onPick} className="hidden" />
+              <span className="px-3 py-1.5 bg-primary text-primary-foreground rounded text-sm cursor-pointer inline-flex items-center gap-1.5"><Upload className="w-4 h-4" />选择文件（可多选）</span>
+            </label>
+          </>
+        )}
+
+        {(stage === 'parsing' || stage === 'committing') && (
+          <p className="text-sm text-muted-foreground">{progress || '处理中…'}</p>
+        )}
+
+        {stage === 'review' && (
+          <div className="flex flex-col gap-4">
+            {/* target project */}
+            <div className="flex flex-col gap-2">
+              <span className="text-sm font-medium">导入到哪个项目</span>
+              <div className="flex items-center gap-3 flex-wrap text-sm">
+                <label className="inline-flex items-center gap-1"><input type="radio" checked={targetMode === 'existing'} disabled={!projects.length} onChange={() => setTargetMode('existing')} />现有项目</label>
+                <select disabled={targetMode !== 'existing'} value={targetProjectId} onChange={(e) => setTargetProjectId(e.target.value)} className="px-2 py-1 border border-border rounded bg-background text-sm disabled:opacity-40">
+                  {projects.map((p) => <option key={p.id} value={p.id}>{p.name}</option>)}
+                </select>
+                <label className="inline-flex items-center gap-1"><input type="radio" checked={targetMode === 'new'} onChange={() => setTargetMode('new')} />新建</label>
+                <input disabled={targetMode !== 'new'} value={newName} onChange={(e) => setNewName(e.target.value)} placeholder="新项目名" className="px-2 py-1 border border-border rounded bg-background text-sm disabled:opacity-40" />
+              </div>
+            </div>
+
+            {/* facts */}
+            <div className="flex flex-col gap-2">
+              <span className="text-sm font-medium">项目事实（AI 归类 · 可改）<span className="text-xs text-muted-foreground"> · {factCount} 项</span></span>
+              <div className="grid grid-cols-2 gap-2">
+                {FACT_LABELS.filter((f) => !f.long).map(({ key, label }) => (
+                  <Field key={key} label={label} value={facts[key] ?? ''} setValue={(v) => setFactField(key, v)} />
+                ))}
+              </div>
+              {FACT_LABELS.filter((f) => f.long).map(({ key, label }) => (
+                <label key={key} className="flex flex-col gap-1 text-sm">
+                  <span className="text-xs text-muted-foreground">{label}</span>
+                  <textarea value={facts[key] ?? ''} onChange={(e) => setFactField(key, e.target.value)} rows={2} className="px-3 py-2 border border-border rounded-md bg-background text-sm" />
+                </label>
+              ))}
+            </div>
+
+            {/* people */}
+            {people.length > 0 && (
+              <div className="flex flex-col gap-1.5">
+                <span className="text-sm font-medium">识别到的人员（勾选导入）</span>
+                {people.map((p, i) => (
+                  <label key={i} className="flex items-center gap-2 text-sm">
+                    <input type="checkbox" checked={p.include} onChange={() => setPeople((arr) => arr.map((x, j) => j === i ? { ...x, include: !x.include } : x))} />
+                    <span>{p.cand.displayName}{p.cand.role ? <span className="text-muted-foreground"> · {p.cand.role}</span> : null}
+                      {Object.keys(p.cand.fields ?? {}).length ? <span className="text-xs text-muted-foreground"> · {Object.entries(p.cand.fields).map(([k, v]) => `${k}:${v}`).join(' ')}</span> : null}
+                    </span>
+                  </label>
+                ))}
+              </div>
+            )}
+
+            {/* files routing */}
+            <div className="flex flex-col gap-1.5">
+              <span className="text-sm font-medium">文件归类（可改）</span>
+              {files.map((f, i) => (
+                <div key={i} className="flex items-center gap-2 text-xs">
+                  <span className="flex-1 truncate" title={f.file.name}>{f.file.name}{f.parseError ? <span className="text-red-400"> · {f.parseError}</span> : null}</span>
+                  <select value={f.role} onChange={(e) => setFiles((arr) => arr.map((x, j) => j === i ? { ...x, role: e.target.value as ParsedFile['role'] } : x))} className="px-1.5 py-0.5 border border-border rounded bg-background" disabled={!!f.parseError && f.kind !== 'image'}>
+                    <option value="document" disabled={f.kind !== 'text'}>文档(RAG)</option>
+                    <option value="asset">资产/图片</option>
+                    <option value="skip">跳过</option>
+                  </select>
+                  {f.role === 'asset' && (
+                    <select value={f.assetTag} onChange={(e) => setFiles((arr) => arr.map((x, j) => j === i ? { ...x, assetTag: e.target.value as ParsedFile['assetTag'] } : x))} className="px-1.5 py-0.5 border border-border rounded bg-background">
+                      <option value="photo">项目照片</option>
+                      <option value="logo">Logo</option>
+                      <option value="pitch">Pitch</option>
+                    </select>
+                  )}
+                </div>
+              ))}
+            </div>
+
+            <div className="flex gap-2">
+              <button onClick={commit} className="px-3 py-1.5 bg-primary text-primary-foreground rounded text-sm">确认导入</button>
+              <button onClick={reset} className="px-3 py-1.5 border border-border rounded text-sm">取消</button>
+            </div>
+          </div>
+        )}
+      </div>
+    </details>
+  );
+}
+
 // ----- Stubs to be expanded in follow-up commits -----
 
 function ProjectsPane() {
@@ -625,6 +987,7 @@ function ProjectsPane() {
   const [creating, setCreating] = useState(false);
   const [name, setName] = useState('');
   const [description, setDescription] = useState('');
+  const toast = useToast();
 
   const create = async () => {
     if (!name.trim()) return;
@@ -637,12 +1000,31 @@ function ProjectsPane() {
     setCreating(false);
   };
 
+  // Delete a whole project + everything it owns. Informed double-confirm: we
+  // fetch the real counts first and spell out exactly what gets destroyed, so
+  // an accidental click can't silently nuke a populated project.
+  const delProject = async (p: Project) => {
+    const { documents, qaRecords, assets } = await projectDeletionImpact(p.id);
+    const ok = confirm(
+      `⚠️ 永久删除项目「${p.name}」？\n\n会一并删除：\n· ${documents} 份文档（含 RAG 索引片段）\n· ${qaRecords} 条报名记录\n· ${assets} 个资产（图片 / Logo / Pitch）\n\n此操作不可恢复。人员档案不受影响（跨项目共享）。`,
+    );
+    if (!ok) return;
+    try {
+      await sendBg({ type: 'projects.delete', payload: { id: p.id } });
+      toast.info('项目已删除', p.name);
+    } catch (err) {
+      toast.error('删除失败', err instanceof Error ? err.message : String(err));
+    }
+  };
+
   return (
     <div className="flex flex-col gap-4 max-w-3xl">
       <header className="flex items-center justify-between">
         <h2 className="text-xl font-semibold">项目档案</h2>
         <button onClick={() => setCreating(true)} className="px-3 py-1.5 bg-primary text-primary-foreground rounded text-sm">+ 新建项目</button>
       </header>
+
+      <BulkImportWizard projects={projects} />
 
       {creating && (
         <div className="border border-border rounded p-4 flex flex-col gap-3">
@@ -658,7 +1040,16 @@ function ProjectsPane() {
       <ul className="flex flex-col gap-2">
         {projects.map((p: Project) => (
           <li key={p.id} className="border border-border rounded p-3 text-sm">
-            <strong className="inline-flex items-center gap-1"><Folder className="w-3.5 h-3.5" />{p.name}</strong>
+            <div className="flex items-start justify-between gap-2">
+              <strong className="inline-flex items-center gap-1"><Folder className="w-3.5 h-3.5" />{p.name}</strong>
+              <button
+                onClick={() => delProject(p)}
+                className="shrink-0 inline-flex items-center gap-1 px-2 py-0.5 text-[11px] text-destructive border border-destructive/40 rounded hover:bg-destructive/10"
+                title="删除项目（含文档/记录/资产）"
+              >
+                <Trash2 className="w-3 h-3" />删除
+              </button>
+            </div>
             <p className="text-muted-foreground text-xs">{p.description}</p>
             <p className="text-xs mt-1">已用于 {p.applicationCount} 次报名 · 创建于 {new Date(p.createdAt).toLocaleDateString()}</p>
             <DocumentManager projectId={p.id} />
@@ -904,19 +1295,25 @@ function guessMimeFromName(name: string): string {
   return map[ext] ?? 'application/octet-stream';
 }
 
-function HistoryPane() {
-  const records = useLiveQuery(() => db.qaRecords.orderBy('createdAt').reverse().toArray(), []) ?? [];
+function HistoryPane({ selectedProjectId, setSelectedProjectId }: { selectedProjectId: string; setSelectedProjectId: (v: string) => void }) {
+  const allRecords = useLiveQuery(() => db.qaRecords.orderBy('createdAt').reverse().toArray(), []) ?? [];
+  const projects = useLiveQuery(() => db.projects.toArray(), []) ?? [];
   const toast = useToast();
+  // V0.4.1: scope history to the selected project ('' = 全部). QARecord.projectId.
+  const records = selectedProjectId ? allRecords.filter((r) => r.projectId === selectedProjectId) : allRecords;
   return (
     <div className="flex flex-col gap-3 max-w-3xl">
-      <h2 className="text-xl font-semibold">历史经验库</h2>
+      <div className="flex items-center justify-between gap-3 flex-wrap">
+        <h2 className="text-xl font-semibold">历史经验库</h2>
+        {projects.length > 0 && <ProjectScopePicker projects={projects} value={selectedProjectId} onChange={setSelectedProjectId} />}
+      </div>
       <p className="text-sm text-muted-foreground">
         每次点 "我已提交，沉淀经验" 后会出现在这里。每条记录里的 Q&A 都会自动作为下次类似字段的 RAG 参考，
-        让 AI 越来越懂你的回答风格。
+        让 AI 越来越懂你的回答风格。按项目筛选可只看某个项目的报名历史。
       </p>
       <ul className="flex flex-col gap-2">
         {records.length === 0 ? (
-          <li className="text-sm text-muted-foreground">尚无历史记录。完成一次报名后会自动出现。</li>
+          <li className="text-sm text-muted-foreground">{selectedProjectId ? '这个项目还没有历史记录。' : '尚无历史记录。完成一次报名后会自动出现。'}</li>
         ) : (
           records.map((r) => (
             <li key={r.id} className="border border-border rounded p-3 text-sm flex items-start gap-3">
