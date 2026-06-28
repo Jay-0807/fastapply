@@ -25,6 +25,8 @@ import {
   Sparkles,
   Users,
   UserCheck,
+  Target,
+  Layers,
 } from 'lucide-react';
 import { db } from '@/lib/db/schema';
 import type {
@@ -43,6 +45,14 @@ import { useTabSessionState } from '@/lib/state/session-state';
 import type { LLMConfig } from '@/lib/db/types';
 import type { PersonalFillResolution } from '@/lib/graph/person-fields';
 import type { ScanResult, ScanResultMeta } from '@/lib/fields/semantic/types';
+import {
+  combinePages,
+  totalAccumulatedFields,
+  currentPageNumber,
+  nextPageLabel,
+  isLikelySamePage,
+  type AccumulatedPage,
+} from '@/lib/sidepanel/page-accumulator';
 
 type Step = 'project' | 'context' | 'draft' | 'submitted';
 
@@ -126,6 +136,13 @@ export function SidePanelApp() {
   // Asset metadata for the current project — used to render selectors in
   // file-field cards without sending blobs over the wire.
   const [projectAssets, setProjectAssets] = useState<{ id: string; filename: string; mimeType: string; tag: string }[]>([]);
+  // Multi-page / wizard forms (2026-06-28): finished pages waiting to be sealed
+  // together as ONE experience record (PM decision: 整份报名存一条). Each "下一页
+  // 继续填" snapshots the current page's Q&A here; "我已提交，沉淀经验" combines
+  // these with the current page into a single QARecord. Empty for single-page
+  // forms → that path stays byte-for-byte the same. Persisted to tabSession so a
+  // sidepanel reopen mid-registration doesn't lose already-filled pages.
+  const [accumulatedPages, setAccumulatedPages] = useTabSessionState<AccumulatedPage[]>('sidepanel.accumulatedPages', []);
 
   // ----- Step 1: pick project -----
   useEffect(() => {
@@ -318,6 +335,9 @@ export function SidePanelApp() {
       return;
     }
     // Drop everything tied to the page we just finished; keep project + event.
+    // This path runs AFTER a seal, so start a fresh registration: clear any
+    // accumulated pages too (belt-and-suspenders — markSubmitted already did).
+    setAccumulatedPages([]);
     setStreamingDrafts({});
     setDraftErrors({});
     setFieldState({});
@@ -355,6 +375,65 @@ export function SidePanelApp() {
     setBatchProgress(null);
     setFillStatus({});
     setLockedFields([]);
+    setAssetMatches({});
+    setProjectAssets([]);
+    setScanMeta(result.meta);
+    await enterDraftWithFields(detected);
+  };
+
+  // ----- Multi-page: accumulate THIS page, then scan the NEXT page (no seal) -----
+  // 2026-06-28 (深创赛 multi-step dogfood). Unlike continueToNextPage (which
+  // lived on SubmittedPanel and sealed one record PER page), this lives at the
+  // draft step and does NOT seal: it snapshots the current page's Q&A into
+  // accumulatedPages, then re-scans so the whole registration can be sealed as
+  // ONE record at the end. The site itself must already be on the next page
+  // (the extension can't drive arbitrary form navigation) — the user clicks the
+  // form's own 下一步/保存 first, then this.
+  const accumulateAndScanNext = async () => {
+    if (!projectId || !eventDraft?.id) {
+      throw new Error('缺少项目或活动信息，请回到第 1 步重新开始。');
+    }
+    const [tab] = await chrome.tabs.query({ active: true, currentWindow: true });
+    if (!tab?.id) {
+      throw new Error('没找到激活的浏览器标签，请确认表单页还在前台。');
+    }
+    const result = await scanCurrentTab(tab.id);
+    const detected = result.fields;
+    if (detected.length === 0) {
+      toast.warning(
+        '本页没扫到字段',
+        '确认你已在网页上点「下一步 / 保存」翻到下一页（能看到新的输入框）再点一次。',
+      );
+      return;
+    }
+    // Guard against double-accumulation: if the fresh scan overlaps heavily with
+    // the page we're leaving, the site hasn't advanced yet. Snapshotting now
+    // would record the same page twice. Warn and bail without touching state.
+    if (
+      isLikelySamePage(
+        fields.map((f) => f.fieldId),
+        detected.map((f) => f.fieldId),
+      )
+    ) {
+      toast.warning(
+        '似乎还在同一页',
+        '请先在网页上点「下一步 / 保存」翻到下一页，再点这里继续填。',
+      );
+      return;
+    }
+    // Snapshot the page we just finished into the accumulator. It's a flat
+    // QAPair[] (never a fieldId-keyed map), so even if the next page reuses a
+    // fieldId we cannot drop this page's answer.
+    setAccumulatedPages((prev) => [...prev, { label: nextPageLabel(prev), qaPairs: Object.values(qaPairs) }]);
+    // Drop everything tied to the page we just finished; keep project + event +
+    // accumulatedPages.
+    setStreamingDrafts({});
+    setDraftErrors({});
+    setFieldState({});
+    setBatchProgress(null);
+    setFillStatus({});
+    setLockedFields([]);
+    setSubmittedMarkdownPath(null);
     setAssetMatches({});
     setProjectAssets([]);
     setScanMeta(result.meta);
@@ -760,7 +839,20 @@ export function SidePanelApp() {
     if (!projectId || !eventDraft?.id) {
       throw new Error('缺少项目或事件信息，无法保存经验。请回到第 1 步重新开始。');
     }
-    const stats = computeStats(Object.values(qaPairs));
+    // Multi-page (2026-06-28): seal the WHOLE registration as one record —
+    // every accumulated prior page plus the current page. combinePages returns
+    // a flat array, so two pages reusing a fieldId can't collapse into one.
+    // Single-page forms: accumulatedPages is [], so this == Object.values(qaPairs).
+    //
+    // INVARIANT (relied on here): project + event are fixed for the whole draft
+    // session. The step machine is forward-only — there is no setStep('project')
+    // anywhere — so once accumulation begins the user cannot switch project, and
+    // accumulatedPages always belong to THIS projectId. If a "back to project"
+    // affordance is ever added, stamp each AccumulatedPage with its owning
+    // projectId and drop non-matching pages here, or page-1 answers would seal
+    // into the wrong project's record + RAG corpus.
+    const allPairs = combinePages(accumulatedPages, Object.values(qaPairs));
+    const stats = computeStats(allPairs);
     const record: QARecord = {
       id: uuid(),
       projectId,
@@ -769,7 +861,7 @@ export function SidePanelApp() {
       // pull "what did 张三 fill for 联系电话 last time".
       personIds: selectedPersonIds,
       status: 'in_progress',
-      qaPairs: Object.values(qaPairs),
+      qaPairs: allPairs,
       markdownPath: null,
       submittedAt: null,
       pageUrl: eventDraft.url ?? '',
@@ -785,8 +877,17 @@ export function SidePanelApp() {
       payload: { qaRecordId: record.id },
     })) as { markdownPath: string; ragChunksCreated: number };
     setSubmittedMarkdownPath(result.markdownPath);
+    // Whole registration sealed — clear the accumulator so the next form starts
+    // a fresh single record.
+    const pageCount = accumulatedPages.length + 1;
+    setAccumulatedPages([]);
     setStep('submitted');
-    toast.success('经验已沉淀', `下载到：${result.markdownPath}`);
+    toast.success(
+      '经验已沉淀',
+      pageCount > 1
+        ? `${pageCount} 页共 ${allPairs.length} 个字段合并为 1 条记录 → ${result.markdownPath}`
+        : `下载到：${result.markdownPath}`,
+    );
   };
 
   // ----- Render -----
@@ -861,6 +962,8 @@ export function SidePanelApp() {
             onFillPage={fillPage}
             onMarkSubmitted={markSubmitted}
             onRescan={rescanCurrentPage}
+            accumulatedPages={accumulatedPages}
+            onContinueNextPage={accumulateAndScanNext}
           />
         </>
       )}
@@ -1288,10 +1391,19 @@ function DraftWorkspace(props: {
   scanMeta: ScanResultMeta | null;
   /** V0.3.0: re-scan the current page in place (e.g. after unlocking, to retry the LLM pass). */
   onRescan: () => Promise<void>;
+  /** 2026-06-28 multi-page: prior pages already filled, awaiting the one consolidated seal. */
+  accumulatedPages: AccumulatedPage[];
+  /** 2026-06-28 multi-page: snapshot this page + scan the next (no seal). */
+  onContinueNextPage: () => Promise<void>;
 }) {
-  const { fields, qaPairs, streamingDrafts, draftErrors, fieldState, batchProgress, fillStatus, llmConfigs, activeConfigId, generatedCount, assetMatches, projectAssets, onChangeAssetMatch } = props;
+  const { fields, qaPairs, streamingDrafts, draftErrors, fieldState, batchProgress, fillStatus, llmConfigs, activeConfigId, generatedCount, assetMatches, projectAssets, onChangeAssetMatch, accumulatedPages } = props;
   const isGenerating = !!batchProgress;
   const [pickerOpen, setPickerOpen] = useState(false);
+  const [accumOpen, setAccumOpen] = useState(false);
+  // Multi-page: how many pages we'd seal right now (prior + this one) and total fields.
+  const pageNo = currentPageNumber(accumulatedPages);
+  const sealFieldCount = totalAccumulatedFields(accumulatedPages, Object.values(qaPairs));
+  const isMultiPage = accumulatedPages.length > 0;
   const filledCount = Object.values(fillStatus).filter((s) => s === 'success').length;
   const failedCount = Object.values(fillStatus).filter((s) => s === 'failed').length;
   const activeConfig = llmConfigs.find((c) => c.id === activeConfigId);
@@ -1300,7 +1412,9 @@ function DraftWorkspace(props: {
   return (
     <div className="flex flex-col gap-3">
       <header className="flex items-center justify-between gap-2">
-        <h2 className="text-sm font-medium">第 3 步 · 草稿 · 已识别 {fields.length} 个字段</h2>
+        <h2 className="text-sm font-medium">
+          第 3 步 · 草稿{isMultiPage ? ` · 第 ${pageNo} 页` : ''} · 已识别 {fields.length} 个字段
+        </h2>
         <button
           onClick={() => setPickerOpen((v) => !v)}
           className="text-xs border border-border rounded px-2 py-1 hover:bg-muted/30 max-w-[260px] truncate"
@@ -1309,6 +1423,33 @@ function DraftWorkspace(props: {
           {chipLabel} ▾
         </button>
       </header>
+
+      {/* Multi-page banner: the registration spans several pages and will be
+          sealed as ONE experience record. Shows how much is queued and lets the
+          user peek at the pages they've already filled. */}
+      {isMultiPage && (
+        <div className="rounded-md border border-primary/40 bg-primary/5 p-3 flex flex-col gap-1.5 text-xs">
+          <button
+            type="button"
+            onClick={() => setAccumOpen((v) => !v)}
+            className="flex items-center gap-1.5 text-left font-medium text-primary"
+          >
+            <Layers className="w-3.5 h-3.5" />
+            已累计 {accumulatedPages.length} 页 · 加本页共 {sealFieldCount} 个字段，将一起沉淀为 1 条经验
+            <span className="text-muted-foreground">{accumOpen ? '▾' : '▸'}</span>
+          </button>
+          {accumOpen && (
+            <ul className="pl-5 list-disc text-muted-foreground flex flex-col gap-0.5">
+              {accumulatedPages.map((p, i) => (
+                <li key={i}>{p.label}：{p.qaPairs.length} 个字段</li>
+              ))}
+            </ul>
+          )}
+          <p className="text-muted-foreground">
+            填完本页可点「下一页继续填」累计更多页；全部填完后点「全部填完，沉淀经验」一次性保存。
+          </p>
+        </div>
+      )}
       <ScanMetaBar meta={props.scanMeta} />
       <AsyncButton
         onClick={props.onRescan}
@@ -1420,31 +1561,49 @@ function DraftWorkspace(props: {
         <div className="rounded-md border border-border bg-muted/30 p-2 text-xs">
           上次填入：<strong className="text-green-500">{filledCount} 成功</strong>
           {failedCount > 0 && <> · <strong className="text-red-400">{failedCount} 失败（看下方红色 ⚠ 标记）</strong></>}
-          。回页面检查后点"我已提交"。
+          。多页报名先点「下一页继续填」，全部填完再「沉淀经验」。
         </div>
       )}
 
-      <div className="flex gap-2 sticky bottom-0 bg-background pt-3 border-t">
-        <AsyncButton
-          onClick={props.onFillPage}
-          label="🎯 一键填入页面"
-          loadingLabel="正在填入字段…"
-          successLabel="✅ 已填入"
-          errorPrefix="填入失败"
-          timeoutMs={45_000}
-          size="lg"
-          className="flex-1"
-        />
+      <div className="flex flex-col gap-2 sticky bottom-0 bg-background pt-3 border-t">
+        <div className="flex gap-2">
+          <AsyncButton
+            onClick={props.onFillPage}
+            label="一键填入页面"
+            icon={<Target className="w-4 h-4" />}
+            loadingLabel="正在填入字段…"
+            successLabel="已填入"
+            errorPrefix="填入失败"
+            timeoutMs={45_000}
+            size="lg"
+            className="flex-1"
+          />
+          {/* Multi-page: snapshot this page and scan the next, WITHOUT sealing.
+              The whole registration seals once via the button below. */}
+          <AsyncButton
+            onClick={props.onContinueNextPage}
+            label="下一页继续填"
+            icon={<ArrowRight className="w-4 h-4" />}
+            loadingLabel="正在扫描下一页…"
+            successLabel="已进入下一页"
+            errorPrefix="扫描失败"
+            timeoutMs={60_000}
+            variant="ghost"
+            size="lg"
+            className="flex-1 border border-border"
+          />
+        </div>
         <AsyncButton
           onClick={props.onMarkSubmitted}
-          label="✅ 我已提交，沉淀经验"
+          label={isMultiPage ? `全部填完，沉淀经验（${accumulatedPages.length + 1} 页）` : '我已提交，沉淀经验'}
+          icon={<Check className="w-4 h-4" />}
           loadingLabel="保存中…"
-          successLabel="✅ 已沉淀"
+          successLabel="已沉淀"
           errorPrefix="保存失败"
           timeoutMs={30_000}
           variant="ghost"
           size="lg"
-          className="flex-1 border border-primary text-primary bg-transparent hover:bg-primary/10"
+          className="w-full border border-primary text-primary bg-transparent hover:bg-primary/10"
         />
       </div>
     </div>

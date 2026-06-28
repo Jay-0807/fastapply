@@ -1,8 +1,8 @@
 # ApplyForge — 产品需求文档（PRD）
 
 > **代号**：ApplyForge — "锻造你的每一次申报"
-> **当前版本**：v0.4.2（项目删除级联 + 一键多格式 AI 导入 + 人员/经验库按项目归属 · 2026-06-26）
-> **文档版本**：PRD r15（r14 + §9 加 V0.4.2 项目管理/一键导入/按项目归属条目 · 2026-06-26）
+> **当前版本**：v0.4.3（多页报名累计填写 → 一次性沉淀为一条经验 · 2026-06-28）
+> **文档版本**：PRD r16（r15 + §9 加 V0.4.3 多页报名累计沉淀条目 · 2026-06-28）
 > **PM**：jayyangstudy@gmail.com
 > **状态**：✅ 已开发，迭代中
 > **代码仓库**：`D:\cursor_project\projects\project_application_google_chrome_extension\`
@@ -658,9 +658,21 @@ client.ts
 - **Code GAN 修掉 7 个真 bug**（各配修法）：① 导入同批重名候选建重复 Person（去重快照循环内未回灌 → 对齐 seed-import 守卫）② commit 非事务、失败重试重复传文档/资产 + 'new' 重试再建空项目（pin 已建项目 + 每文件 `committed` 标记续传）③ `targetProjectId` 不随 live-query 同步导致"现有项目"导入卡死 ④ 级联删除 vs 异步 `indexDocument` 竞态留孤儿 chunk（存在性检查进同一事务）⑤ 大文件主线程解析冻结（25MB 上限）⑥ 删当前筛选项目后筛选器悬空 ⑦ 空文本文档误标 ✅ 不进 RAG。
 - **174 测试通过**（+9：project-ops 3 + parsers 6）、compile / lint clean、build 2.98 MB（jszip 懒加载）。
 
-### V0.4.2 hotfix (2026-06-28) — 主密码解锁对 V2.2 configs-only 安装永远失败
+### V0.4.3 (2026-06-28) — 多页报名累计填写 → 一次性沉淀为一条经验
 
-dogfood 暴露：明明密码正确，解锁却报 "Wrong master password"，连带第2步活动提取"AI 提取失败 → 退回 OG/meta"、第3步 LLM "Settings locked"。**根因一处**：`unlockSettings` 只试解 legacy 字段 `encryptedAnthropicKey`，但 V2.2+ 的 key 存在 `llmConfigs[].encryptedKey`，configs-only 安装该字段为 `''` → 解空串必抛 → 任何密码都报错。**修法**：抽 `pickUnlockVerificationTarget`（`src/lib/crypto/unlock-target.ts` 纯函数）选第一条真实存在的密文校验（优先 config key、回退 legacy、皆无则接受）。**不削弱安全**（有密文时错密码仍被 AES-GCM 挡下），独立对抗式 GAN 复核 5 条安全属性全 HOLD。+6 单测（**共 180 通过**）、compile / lint clean。
+真机痛点：创赛 / 孵化器 / 高校报名多为**向导式多页**（深创赛：赛区 → 基本信息 → 团队 → 商业计划书 → …），插件原本一页填完即沉淀一条。**反转 V2.7 的"每页各封一条"模型**（PM 拍板：整份报名存一条）：
+
+- **第 3 步新增「下一页继续填」**：把当前页 Q&A 快照进会话级累计器（`useTabSessionState('sidepanel.accumulatedPages')`，按 tab 隔离、随 sidepanel 重开存活）→ 重置当前页瞬态 → 扫下一页，**不封存**。逐页累计。
+- **「全部填完，沉淀经验」一次性合并**：`combinePages(accumulatedPages, 当前页)` 把所有页**合成 1 条 QARecord**（1 个 markdown，1 次 RAG 种入），封存后清空累计器。
+- **承重不变式（数据完整性，配 10 单测）**：① 跨页合并用**扁平数组** QAPair[]（绝不 fieldId-keyed map）—— `fieldId` 跨页非保证唯一，map 合并会互相覆盖丢字段 ② **单页零回归**：不点「下一页」时累计器为空，封存 = 今天行为逐字节相同 ③ **同页守卫** `isLikelySamePage`（fieldId 重叠 >50% ⇒ 站点没翻页，警告不快照，防重复累计）④ **PII 边界不变**：seal 仍 `record.qaPairs.filter(isSeedableQaPair)` 逐条过滤，合并后个人/OTP 照样不进 RAG ⑤ **项目固定**：step 机前向无 `setStep('project')`，累计期不能改项目。
+- **对抗式 GAN**：独立怀疑 reviewer 复核 5 不变式全 HOLDS；D3「跨项目封存」经核实**不可达**（前向 step 机），D1「同页守卫误拦纯重复结构页」记为已知限制 + follow-up。
+- **新增** `src/lib/sidepanel/page-accumulator.ts`（纯函数可测）+ 10 单测。⚠️ 自动上传仍做不到（OS 文件弹窗不可程序化）；多页静态扫不到动态/分页字段——靠用户在站点翻页 + 重扫。
+
+### V0.4.3 hotfix (2026-06-28) — 主密码解锁对 V2.2 configs-only 安装永远失败
+
+dogfood 暴露：明明密码正确，解锁却报 "Wrong master password"，连带第2步活动提取"AI 提取失败 → 退回 OG/meta"、第3步 LLM "Settings locked"。**根因一处**：`unlockSettings` 只试解 legacy 字段 `encryptedAnthropicKey`，但 V2.2+ 的 key 存在 `llmConfigs[].encryptedKey`，configs-only 安装该字段为 `''` → 解空串必抛 → 任何密码都报错。**修法**：抽 `pickUnlockVerificationTarget`（`src/lib/crypto/unlock-target.ts` 纯函数）选第一条真实存在的密文校验（优先 config key、回退 legacy、皆无则接受）。**不削弱安全**（有密文时错密码仍被 AES-GCM 挡下），独立对抗式 GAN 复核 5 条安全属性全 HOLD。+6 单测。
+
+> 本轮 V0.4.3（多页累计 +10）与 hotfix（解锁 +6）合并落 main，测试 **共 190 通过**。
 
 ---
 
