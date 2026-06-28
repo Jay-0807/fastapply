@@ -390,7 +390,11 @@ function PersonForm({ initial, onSave, onCancel }: {
       {PERSON_FIELD_LABELS.filter((f) => f.long).map(({ key, label }) => (
         <label key={key} className="flex flex-col gap-1 text-sm">
           <span className="text-xs text-muted-foreground">{label}</span>
-          <textarea value={fields[key] ?? ''} onChange={(e) => setField(key, e.target.value)} rows={2} className="px-3 py-2 border border-border rounded-md bg-background text-sm" />
+          <AutoGrowTextarea
+            value={fields[key] ?? ''}
+            onChange={(v) => setField(key, v)}
+            className="px-3 py-2 border border-border rounded-md bg-background text-sm"
+          />
         </label>
       ))}
       <label className="flex flex-col gap-1 text-sm">
@@ -690,6 +694,46 @@ function Field({ label, value, setValue, type = 'text', placeholder }: { label: 
         className="px-3 py-2 border border-border rounded-md bg-background text-foreground placeholder:text-muted-foreground focus:outline-none focus:ring-2 focus:ring-primary"
       />
     </label>
+  );
+}
+
+// Textarea that grows to fit its content instead of capping at a fixed row
+// count and hiding the rest behind a scrollbar. Used for long free-text fields
+// (e.g. 个人简介) where the user expects to see everything they typed. `minRows`
+// is the collapsed height; it expands on every value change up to the content's
+// natural height. overflow:hidden because the box itself is the scroll surface.
+function AutoGrowTextarea({
+  value,
+  onChange,
+  minRows = 2,
+  placeholder,
+  className = '',
+}: {
+  value: string;
+  onChange: (v: string) => void;
+  minRows?: number;
+  placeholder?: string;
+  className?: string;
+}) {
+  const ref = useRef<HTMLTextAreaElement>(null);
+  useEffect(() => {
+    const el = ref.current;
+    if (!el) return;
+    // Reset to auto first so the box can SHRINK when text is deleted, then grow
+    // to the full scroll height.
+    el.style.height = 'auto';
+    el.style.height = `${el.scrollHeight}px`;
+  }, [value]);
+  return (
+    <textarea
+      ref={ref}
+      value={value}
+      onChange={(e) => onChange(e.target.value)}
+      rows={minRows}
+      placeholder={placeholder}
+      style={{ resize: 'none', overflow: 'hidden' }}
+      className={className}
+    />
   );
 }
 
