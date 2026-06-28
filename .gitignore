@@ -12,6 +12,10 @@ dist/
 .env.local
 .env.*.local
 
+# Knowledge-graph seed exports — contain REAL person PII (ID/phone/email).
+# This repo is PUBLIC; these must NEVER be committed (CLAUDE.md PII redline).
+applyforge-seed-*.json
+
 # Claude Code local state
 .claude/
 
