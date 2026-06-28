@@ -658,6 +658,10 @@ client.ts
 - **Code GAN 修掉 7 个真 bug**（各配修法）：① 导入同批重名候选建重复 Person（去重快照循环内未回灌 → 对齐 seed-import 守卫）② commit 非事务、失败重试重复传文档/资产 + 'new' 重试再建空项目（pin 已建项目 + 每文件 `committed` 标记续传）③ `targetProjectId` 不随 live-query 同步导致"现有项目"导入卡死 ④ 级联删除 vs 异步 `indexDocument` 竞态留孤儿 chunk（存在性检查进同一事务）⑤ 大文件主线程解析冻结（25MB 上限）⑥ 删当前筛选项目后筛选器悬空 ⑦ 空文本文档误标 ✅ 不进 RAG。
 - **174 测试通过**（+9：project-ops 3 + parsers 6）、compile / lint clean、build 2.98 MB（jszip 懒加载）。
 
+### V0.4.2 hotfix (2026-06-28) — 主密码解锁对 V2.2 configs-only 安装永远失败
+
+dogfood 暴露：明明密码正确，解锁却报 "Wrong master password"，连带第2步活动提取"AI 提取失败 → 退回 OG/meta"、第3步 LLM "Settings locked"。**根因一处**：`unlockSettings` 只试解 legacy 字段 `encryptedAnthropicKey`，但 V2.2+ 的 key 存在 `llmConfigs[].encryptedKey`，configs-only 安装该字段为 `''` → 解空串必抛 → 任何密码都报错。**修法**：抽 `pickUnlockVerificationTarget`（`src/lib/crypto/unlock-target.ts` 纯函数）选第一条真实存在的密文校验（优先 config key、回退 legacy、皆无则接受）。**不削弱安全**（有密文时错密码仍被 AES-GCM 挡下），独立对抗式 GAN 复核 5 条安全属性全 HOLD。+6 单测（**共 180 通过**）、compile / lint clean。
+
 ---
 
 ## 10. 不在范围（V3+ 候选）

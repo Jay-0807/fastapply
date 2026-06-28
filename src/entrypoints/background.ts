@@ -42,6 +42,7 @@ import {
   restoreSessionKey,
   SECURE_STORAGE_CONFIG,
 } from '@/lib/crypto/secure-storage';
+import { pickUnlockVerificationTarget } from '@/lib/crypto/unlock-target';
 
 // Module-level readiness promise — every message handler awaits this so a
 // request that arrives 50ms after SW boot doesn't see a still-null sessionKey
@@ -1494,16 +1495,25 @@ async function unlockSettings(masterPassword: string): Promise<{ ok: boolean }> 
   const settings = await db.appSettings.get('singleton');
   if (!settings) throw new Error('No settings yet — run onboarding first');
   const key = await deriveKey(masterPassword, settings.keyDerivationSalt);
-  // Try to decrypt the anthropic key as a sanity check
+  // Verify the password by decrypting a key that ACTUALLY EXISTS. V2.2+ stores
+  // keys in llmConfigs[].encryptedKey; the legacy encryptedAnthropicKey is ''
+  // for configs-only installs — verifying it alone threw for every password,
+  // even the correct one ("Wrong master password" bug, 2026-06-28).
+  const verifyTarget = pickUnlockVerificationTarget(settings);
+  if (!verifyTarget) {
+    // No encrypted key stored yet → nothing to verify against. Accept the
+    // derived key; the next encrypt adopts this password. It can't be "wrong"
+    // when there's no ciphertext it must decrypt.
+    setSessionKey(key);
+    return { ok: true };
+  }
   try {
-    await decryptString(
-      settings.encryptedAnthropicKey.split('::')[0]!,
-      settings.encryptedAnthropicKey.split('::')[1]!,
-      key,
-    );
+    const [ciphertext, iv] = verifyTarget.split('::');
+    await decryptString(ciphertext!, iv!, key);
     setSessionKey(key);
     return { ok: true };
   } catch {
+    // Wrong password → wrong AES-GCM key → auth-tag failure here. Still rejected.
     throw new Error('Wrong master password');
   }
 }
