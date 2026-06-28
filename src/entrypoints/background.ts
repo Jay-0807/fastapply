@@ -42,7 +42,7 @@ import {
   restoreSessionKey,
   SECURE_STORAGE_CONFIG,
 } from '@/lib/crypto/secure-storage';
-import { pickUnlockVerificationTarget } from '@/lib/crypto/unlock-target';
+import { collectUnlockVerificationTargets } from '@/lib/crypto/unlock-target';
 
 // Module-level readiness promise — every message handler awaits this so a
 // request that arrives 50ms after SW boot doesn't see a still-null sessionKey
@@ -1499,23 +1499,29 @@ async function unlockSettings(masterPassword: string): Promise<{ ok: boolean }> 
   // keys in llmConfigs[].encryptedKey; the legacy encryptedAnthropicKey is ''
   // for configs-only installs — verifying it alone threw for every password,
   // even the correct one ("Wrong master password" bug, 2026-06-28).
-  const verifyTarget = pickUnlockVerificationTarget(settings);
-  if (!verifyTarget) {
+  const targets = collectUnlockVerificationTargets(settings);
+  if (targets.length === 0) {
     // No encrypted key stored yet → nothing to verify against. Accept the
     // derived key; the next encrypt adopts this password. It can't be "wrong"
     // when there's no ciphertext it must decrypt.
     setSessionKey(key);
     return { ok: true };
   }
-  try {
-    const [ciphertext, iv] = verifyTarget.split('::');
-    await decryptString(ciphertext!, iv!, key);
-    setSessionKey(key);
-    return { ok: true };
-  } catch {
-    // Wrong password → wrong AES-GCM key → auth-tag failure here. Still rejected.
-    throw new Error('Wrong master password');
+  // Try every stored key: configs can be encrypted under different passwords
+  // (addLLMConfig doesn't enforce a single one), so the correct password might
+  // only match one of them. Unlock if it decrypts ANY.
+  for (const target of targets) {
+    try {
+      const [ciphertext, iv] = target.split('::');
+      await decryptString(ciphertext!, iv!, key);
+      setSessionKey(key);
+      return { ok: true };
+    } catch {
+      // This config wasn't encrypted with this password — try the next.
+    }
   }
+  // Matched none → wrong AES-GCM key for every stored ciphertext. Rejected.
+  throw new Error('Wrong master password');
 }
 
 async function saveSettings(args: { patch: Partial<AppSettings>; plainKeys?: { anthropic?: string; openai?: string; openaiCompat?: string; masterPassword?: string } }) {

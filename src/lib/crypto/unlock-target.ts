@@ -25,17 +25,26 @@ function isUsableCiphertext(s: string | undefined | null): s is string {
 }
 
 /**
- * Return the "ciphertext::iv" string the unlock check should decrypt, or null
- * when no encrypted key is stored yet.
+ * Return EVERY "ciphertext::iv" the unlock check could decrypt, in priority
+ * order: all usable llmConfigs keys (V2.2+ primary storage), then the legacy
+ * encryptedAnthropicKey. Empty when nothing is encrypted yet.
  *
- * Order: first usable llmConfigs key (V2.2+ primary storage) → legacy
- * encryptedAnthropicKey → null.
+ * Why all of them, not just the first (2026-06-28): `addLLMConfig` derives the
+ * AES key from whatever master password was typed AT ADD TIME, without checking
+ * it matches existing configs — so two configs can be encrypted under DIFFERENT
+ * passwords (same salt). Verifying only the first config then rejects the
+ * (correct!) password for any other config. `unlockSettings` tries each target
+ * and unlocks if the password decrypts ANY of them, so whichever config the
+ * password belongs to (e.g. the one the user is actively using) unlocks the
+ * session. A wrong password matches none → still rejected.
  */
-export function pickUnlockVerificationTarget(
+export function collectUnlockVerificationTargets(
   settings: Pick<AppSettings, 'llmConfigs' | 'encryptedAnthropicKey'>,
-): string | null {
-  const fromConfig = settings.llmConfigs?.find((c) => isUsableCiphertext(c.encryptedKey))?.encryptedKey;
-  if (isUsableCiphertext(fromConfig)) return fromConfig;
-  if (isUsableCiphertext(settings.encryptedAnthropicKey)) return settings.encryptedAnthropicKey;
-  return null;
+): string[] {
+  const targets: string[] = [];
+  for (const c of settings.llmConfigs ?? []) {
+    if (isUsableCiphertext(c.encryptedKey)) targets.push(c.encryptedKey);
+  }
+  if (isUsableCiphertext(settings.encryptedAnthropicKey)) targets.push(settings.encryptedAnthropicKey);
+  return targets;
 }

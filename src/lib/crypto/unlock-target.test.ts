@@ -1,8 +1,8 @@
 import { describe, expect, it } from 'vitest';
-import { pickUnlockVerificationTarget } from './unlock-target';
+import { collectUnlockVerificationTargets } from './unlock-target';
 import type { AppSettings, LLMConfig } from '@/lib/db/types';
 
-// Build just enough of AppSettings for the picker (it only reads two fields).
+// Build just enough of AppSettings for the collector (it only reads two fields).
 function settings(
   llmConfigs: Array<Partial<LLMConfig>>,
   encryptedAnthropicKey = '',
@@ -10,38 +10,43 @@ function settings(
   return { llmConfigs: llmConfigs as LLMConfig[], encryptedAnthropicKey };
 }
 
-describe('pickUnlockVerificationTarget — verify against a key that actually exists', () => {
-  it('REGRESSION: configs-only install (legacy field empty) verifies against the llmConfig key', () => {
-    // This is the exact broken case: a V2.2 user with a Claude config and no
-    // legacy encryptedAnthropicKey. Old code tested '' → always "Wrong password".
+describe('collectUnlockVerificationTargets — verify against EVERY stored key', () => {
+  it('REGRESSION: configs-only install (legacy field empty) yields the llmConfig key', () => {
+    // V2.2 user with a Claude config and no legacy encryptedAnthropicKey. Old
+    // code tested only '' → always "Wrong password".
     const s = settings([{ encryptedKey: 'CT::IV' }], '');
-    expect(pickUnlockVerificationTarget(s)).toBe('CT::IV');
+    expect(collectUnlockVerificationTargets(s)).toEqual(['CT::IV']);
   });
 
-  it('prefers the first usable llmConfig key over the legacy field', () => {
-    const s = settings([{ encryptedKey: 'cfg::iv' }], 'legacy::iv');
-    expect(pickUnlockVerificationTarget(s)).toBe('cfg::iv');
+  it('returns ALL usable config keys (configs can be under different passwords)', () => {
+    // The real reason this exists: two configs encrypted with different master
+    // passwords. Unlock must be able to try both so the correct one matches.
+    const s = settings([{ encryptedKey: 'claude::iv1' }, { encryptedKey: 'kimi::iv2' }], '');
+    expect(collectUnlockVerificationTargets(s)).toEqual(['claude::iv1', 'kimi::iv2']);
   });
 
-  it('skips configs whose key is missing/blank and uses the first usable one', () => {
-    // 2nd config omits encryptedKey entirely (reads as undefined at runtime).
-    const s = settings([{ encryptedKey: '' }, {}, { encryptedKey: 'good::iv' }]);
-    expect(pickUnlockVerificationTarget(s)).toBe('good::iv');
+  it('config keys come before the legacy key, in config order', () => {
+    const s = settings([{ encryptedKey: 'cfg1::iv' }, { encryptedKey: 'cfg2::iv' }], 'legacy::iv');
+    expect(collectUnlockVerificationTargets(s)).toEqual(['cfg1::iv', 'cfg2::iv', 'legacy::iv']);
   });
 
-  it('falls back to the legacy encryptedAnthropicKey when no config key is usable', () => {
+  it('skips configs whose key is missing/blank/malformed', () => {
+    // 2nd config omits encryptedKey entirely (undefined at runtime); 3rd is blank.
+    const s = settings([{ encryptedKey: 'good::iv' }, {}, { encryptedKey: '' }], 'garbage-no-sep');
+    expect(collectUnlockVerificationTargets(s)).toEqual(['good::iv']);
+  });
+
+  it('includes the legacy key when no config key is usable', () => {
     const s = settings([{ encryptedKey: '' }], 'legacy::iv');
-    expect(pickUnlockVerificationTarget(s)).toBe('legacy::iv');
+    expect(collectUnlockVerificationTargets(s)).toEqual(['legacy::iv']);
   });
 
-  it('returns null when nothing encrypted exists yet (no false "wrong password")', () => {
-    expect(pickUnlockVerificationTarget(settings([], ''))).toBeNull();
-    expect(pickUnlockVerificationTarget(settings([{ encryptedKey: '' }], ''))).toBeNull();
+  it('returns [] when nothing encrypted exists yet (caller then accepts any password)', () => {
+    expect(collectUnlockVerificationTargets(settings([], ''))).toEqual([]);
+    expect(collectUnlockVerificationTargets(settings([{ encryptedKey: '' }], ''))).toEqual([]);
   });
 
-  it('treats a malformed key without "::" as unusable (not a valid ciphertext::iv)', () => {
-    // A string without the "::" separator can't be decrypted as our payload —
-    // don't pick it (would have thrown and masqueraded as a wrong password).
-    expect(pickUnlockVerificationTarget(settings([{ encryptedKey: 'garbage' }], 'alsobad'))).toBeNull();
+  it('treats a key without "::" as unusable (not a valid ciphertext::iv)', () => {
+    expect(collectUnlockVerificationTargets(settings([{ encryptedKey: 'garbage' }], 'alsobad'))).toEqual([]);
   });
 });
