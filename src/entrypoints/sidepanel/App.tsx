@@ -1627,6 +1627,7 @@ function FieldCard({ index, field, qa, streaming, error, state, fillStatus, asse
   const [regenHint, setRegenHint] = useState('');
   const constraintBadges: string[] = [];
   if (field.constraints.required) constraintBadges.push('必填');
+  if (field.constraints.minLength) constraintBadges.push(`≥ ${field.constraints.minLength} 字`);
   if (field.constraints.maxLength) constraintBadges.push(`≤ ${field.constraints.maxLength} 字`);
   // Show the field type with a friendlier label so users know it's a choice.
   const typeLabels: Record<string, string> = {
@@ -1652,6 +1653,7 @@ function FieldCard({ index, field, qa, streaming, error, state, fillStatus, asse
 
   const charCount = (qa?.finalValue ?? '').length;
   const overLimit = field.constraints.maxLength ? charCount > field.constraints.maxLength : false;
+  const belowMin = field.constraints.minLength ? charCount > 0 && charCount < field.constraints.minLength : false;
   const showError = !!error && !qa?.finalValue;
 
   return (
@@ -1801,7 +1803,9 @@ function FieldCard({ index, field, qa, streaming, error, state, fillStatus, asse
           onChange={(e) => onUpdate(e.target.value)}
           rows={field.type === 'textarea' ? 4 : 2}
           className={`w-full px-2 py-1.5 border rounded text-sm ${overLimit ? 'border-red-500' : 'border-border'}`}
-          placeholder={streaming ? '生成中...' : '点击「AI 生成全部草稿」或自己写'}
+          // 副标题: the page's own placeholder (content hint) shown gray, vanishes
+          // on input — matches the page so the user reads what the field wants.
+          placeholder={streaming ? '生成中...' : (field.constraints.placeholder || '点击「AI 生成全部草稿」或自己写')}
         />
       )}
 
@@ -1812,8 +1816,9 @@ function FieldCard({ index, field, qa, streaming, error, state, fillStatus, asse
         ) : isChoice ? (
           <span>{qa?.finalValue ? `已选: ${qa.finalValue}` : '未选'}</span>
         ) : (
-          <span className={overLimit ? 'text-red-400' : ''}>
+          <span className={overLimit ? 'text-red-400' : belowMin ? 'text-amber-500' : ''}>
             {charCount}{field.constraints.maxLength ? ` / ${field.constraints.maxLength}` : ''} 字
+            {field.constraints.minLength ? `（需 ≥ ${field.constraints.minLength}）` : ''}
           </span>
         )}
         {!isFile && qa?.ragReferences?.chunkIds?.length ? (

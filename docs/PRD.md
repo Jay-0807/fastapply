@@ -1,8 +1,8 @@
 # ApplyForge — 产品需求文档（PRD）
 
 > **代号**：ApplyForge — "锻造你的每一次申报"
-> **当前版本**：v0.4.3（多页报名累计填写 → 一次性沉淀为一条经验 · 2026-06-28）
-> **文档版本**：PRD r16（r15 + §9 加 V0.4.3 多页报名累计沉淀条目 · 2026-06-28）
+> **当前版本**：v0.4.4（字段识别：主标题/副标题分离 + 字数下限 + 视觉阅读顺序 · 2026-06-29）
+> **文档版本**：PRD r17（r16 + §9 加 V0.4.4 字段识别质量条目 · 2026-06-29）
 > **PM**：jayyangstudy@gmail.com
 > **状态**：✅ 已开发，迭代中
 > **代码仓库**：`D:\cursor_project\projects\project_application_google_chrome_extension\`
@@ -673,6 +673,15 @@ client.ts
 dogfood 暴露：明明密码正确，解锁却报 "Wrong master password"，连带第2步活动提取"AI 提取失败 → 退回 OG/meta"、第3步 LLM "Settings locked"。**根因一处**：`unlockSettings` 只试解 legacy 字段 `encryptedAnthropicKey`，但 V2.2+ 的 key 存在 `llmConfigs[].encryptedKey`，configs-only 安装该字段为 `''` → 解空串必抛 → 任何密码都报错。**修法**：抽 `pickUnlockVerificationTarget`（`src/lib/crypto/unlock-target.ts` 纯函数）选第一条真实存在的密文校验（优先 config key、回退 legacy、皆无则接受）。**不削弱安全**（有密文时错密码仍被 AES-GCM 挡下），独立对抗式 GAN 复核 5 条安全属性全 HOLD。+6 单测。
 
 > 本轮 V0.4.3（多页累计 +10）与 hotfix（解锁 +6）合并落 main，测试 **共 190 通过**。
+
+### V0.4.4 (2026-06-29) — 字段识别：主标题/副标题分离 + 字数下限 + 视觉阅读顺序
+
+深创赛 dogfood 暴露三个识别质量问题，一轮修（纯函数 `src/lib/fields/field-normalize.ts` + 20 单测，全程对抗式 GAN）：
+
+- **主标题 ≠ 副标题**：原本把页面占位提示（副标题"产品开发：…"）吞进主标题（"项目概要 - 产品开发：…"）。修法 `cleanDisplayLabel` 后处理——主标题只留干净标题，副标题留在 `constraints.placeholder` 并在 sidepanel **渲染成输入框灰色 placeholder**（输入即消失，和页面一致）；**短裸子标签（"姓名"）仍保留复合 label**，只砍 hint-like 占位。
+- **字数下限是强约束**：`extractMinLength` 解析「最少200字 / 至少 / 不少于 / N字以上」→ `constraints.minLength`（DOM 属性优先），连同 maxLength + 副标题**全部喂进生成 prompt**（强约束）；FieldCard 加「≥N 字」徽章 + 低于下限变色。
+- **视觉阅读顺序**：`readingOrder(rects)` 按 `getBoundingClientRect` 行分组、行内左→右，替代纯 DOM 顺序（两列布局 DOM≠视觉）；无布局时回退 DOM 顺序。**GAN 抓到并修两坑**：行锚 anchor 判定（高 textarea 不链下一行）、无盒/隐藏字段排末尾（不因 rect=0 顶到最前）。
+- **共 213 测试通过**（+23）、compile / lint clean、build 2.98 MB。⚠️ 真实表单 label 仍须真机 dogfood 确认（截图里"请输入项目概要…"提示启发式可能抓到校验提示文字，待 PM 实测反馈再针对真实 DOM 微调）。
 
 ---
 

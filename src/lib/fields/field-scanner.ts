@@ -9,6 +9,7 @@
 // DetectedField[] back to the service worker via chrome.runtime messaging.
 
 import type { DetectedField, FieldType, FieldConstraints, DetectedFieldProvenance } from '@/lib/db/types';
+import { extractMinLength, cleanDisplayLabel, readingOrder } from './field-normalize';
 
 /**
  * URLs that are known form-editor / admin pages where every scan would return
@@ -323,22 +324,31 @@ export function scanFields(root: Document | ShadowRoot = document): DetectedFiel
     }
   }
 
-  // Re-sort into DOM document order so the field list matches the page
-  // top-to-bottom. Detection runs in passes BY TYPE (ARIA / native choice /
-  // upload / plain inputs), so without this a radio group appearing 3rd on the
-  // page would be listed before a text input appearing 1st (the bug behind
-  // "申请人姓名/职位/邮箱 没有按照顺序识别"). Stable fallback (a - b) preserves
-  // original order for disconnected or identical nodes.
-  const order = fields.map((_, i) => i);
-  order.sort((a, b) => {
-    const ea = fieldEls[a];
-    const eb = fieldEls[b];
-    if (!ea || !eb || ea === eb) return a - b;
-    const rel = ea.compareDocumentPosition(eb);
-    if (rel & Node.DOCUMENT_POSITION_FOLLOWING) return -1;
-    if (rel & Node.DOCUMENT_POSITION_PRECEDING) return 1;
-    return a - b;
+  // Order to match how a human reads the page: top→bottom, then left→right
+  // within a row. Detection runs in passes BY TYPE (ARIA / native choice /
+  // upload / plain inputs), so the raw push order is type-grouped, not visual.
+  // Geometry (getBoundingClientRect) is the truth for two-column / grid layouts
+  // where DOM order ≠ visual order (深创赛: left text column + right upload
+  // column on the same row). When there's no layout (zero-sized rects — e.g.
+  // happy-dom in tests, pre-paint), readingOrder returns null and we fall back
+  // to DOM document order (the prior behavior — keeps fixtures byte-identical).
+  const rects = fieldEls.map((el) => {
+    const r = el?.getBoundingClientRect?.();
+    return r ? { top: r.top, left: r.left, width: r.width, height: r.height } : { top: 0, left: 0, width: 0, height: 0 };
   });
+  let order = readingOrder(rects);
+  if (!order) {
+    order = fields.map((_, i) => i);
+    order.sort((a, b) => {
+      const ea = fieldEls[a];
+      const eb = fieldEls[b];
+      if (!ea || !eb || ea === eb) return a - b;
+      const rel = ea.compareDocumentPosition(eb);
+      if (rel & Node.DOCUMENT_POSITION_FOLLOWING) return -1;
+      if (rel & Node.DOCUMENT_POSITION_PRECEDING) return 1;
+      return a - b;
+    });
+  }
   const ordered = order.map((i) => fields[i]!);
 
   // G4 (2026-06-06): collapse duplicate file inputs that resolve to the SAME
@@ -816,10 +826,18 @@ function analyzeElement(el: HTMLElement, fieldId: string): DetectedField | null 
     helperText: constraintsResult.helperSource ? { value: constraintsResult.helperSource.value, source: constraintsResult.helperSource.source } : undefined,
   };
 
+  // Clean the DISPLAY label into a 主标题: drop the placeholder (副标题) the
+  // heuristic merged in via " - ", any "请输入…" prompt prefix, and the trailing
+  // "（最少200字…）" length parenthetical (already parsed into constraints above).
+  // Constraint + sensitive detection already ran on the RAW label, so nothing is
+  // lost. The 副标题 lives on in constraints.placeholder (rendered as the input's
+  // gray placeholder in the sidepanel, matching the page).
+  const displayLabel = cleanDisplayLabel(label, constraintsResult.constraints.placeholder);
+
   return {
     fieldId,
     domSelector: buildSelector(el),
-    label,
+    label: displayLabel,
     type,
     constraints: constraintsResult.constraints,
     rawElementInfo: {
@@ -1395,6 +1413,13 @@ function detectConstraintsWithSource(el: HTMLElement, label: string): Constraint
       }
       break;
     }
+  }
+  // Min-length FLOOR from gray text the page only states in words — "最少 200 字"
+  // / "至少 X 字" / "at least N words". A hard generation constraint (the form
+  // rejects shorter answers) the DOM has no attribute for. attr minLength wins.
+  if (!c.minLength) {
+    const minHint = extractMinLength(hayStack);
+    if (minHint) c.minLength = minHint;
   }
   // Required from label asterisk / "必填" markers
   if (!c.required) {

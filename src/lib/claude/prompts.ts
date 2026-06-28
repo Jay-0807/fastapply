@@ -115,9 +115,9 @@ export function buildUserPrompt(args: BuildPromptArgs): string {
     const target = Math.floor(field.constraints.maxLength * 0.9);
     constraintLines.push(`- 硬字数上限 ${field.constraints.maxLength} 字符（约 ${Math.round(field.constraints.maxLength / 6)} 个英文词）。**必须在此字数内写出"完整、自洽、能独立成立"的答案** —— 信息装不下就只保留最重要的几点、每点写完整，绝不为塞满而写到一半被截断。控制在约 ${target} 字符、以句号结束。`);
   }
-  if (field.constraints.minLength) constraintLines.push(`- 最少 ${field.constraints.minLength} 字`);
+  if (field.constraints.minLength) constraintLines.push(`- **硬字数下限 ${field.constraints.minLength} 字**：低于此字数表单会拒收，必须写满、内容充实，不要凑字数。`);
   if (field.constraints.required) constraintLines.push('- 必填');
-  if (field.constraints.placeholder) constraintLines.push(`- 占位提示: "${field.constraints.placeholder}"`);
+  if (field.constraints.placeholder) constraintLines.push(`- 字段填写指引（页面给的副标题/示例，回答必须围绕这些方面展开）: "${field.constraints.placeholder}"`);
   if (field.constraints.helperText) constraintLines.push(`- 辅助说明: "${field.constraints.helperText}"`);
 
   const projectSection = projectChunks.length
@@ -277,9 +277,9 @@ export function buildBatchPrompt(args: BuildBatchPromptArgs): BatchPromptResult 
       const target = Math.floor(f.constraints.maxLength * 0.9);
       constraintLines.push(`  - 硬字数上限 ${f.constraints.maxLength} 字符（约 ${Math.round(f.constraints.maxLength / 6)} 词）：在此字数内写完整自洽的内容，装不下就精简、每点完整、别写到一半。约 ${target} 字符、以句号结束。`);
     }
-    if (f.constraints.minLength) constraintLines.push(`  - 最少 ${f.constraints.minLength} 字`);
+    if (f.constraints.minLength) constraintLines.push(`  - **硬字数下限 ${f.constraints.minLength} 字**：低于此字数表单会拒收，必须写满、内容充实。`);
     if (f.constraints.required) constraintLines.push('  - 必填');
-    if (f.constraints.placeholder) constraintLines.push(`  - 占位提示: "${f.constraints.placeholder}"`);
+    if (f.constraints.placeholder) constraintLines.push(`  - 字段填写指引（页面副标题/示例，回答必须围绕这些方面展开）: "${f.constraints.placeholder}"`);
     if (f.constraints.helperText) constraintLines.push(`  - 辅助说明: "${f.constraints.helperText}"`);
     const constraintBlock = constraintLines.length ? `\n${constraintLines.join('\n')}` : '';
     return `【字段 ${key}】

@@ -711,3 +711,45 @@ describe('field-scanner — two-column sibling-cell layouts (HiCool dogfood 2026
     expect(name?.constraints.sensitiveKind).toBe('personal');
   });
 });
+
+// 深创赛 dogfood (2026-06-29): a 主标题 + (字数限制) heading above a textarea whose
+// placeholder is the 副标题 content hint. The clean title, the separated 副标题,
+// and BOTH the min and max char limits must all be recovered.
+describe('field-scanner — 主标题 / 副标题 / 字数限制 (深创赛)', () => {
+  beforeEach(() => {
+    document.body.innerHTML = '';
+  });
+
+  it('splits 主标题 from placeholder 副标题 and parses min+max char limits', () => {
+    setupDOM(`
+      <div class="form-row">
+        <span>* 项目概要 （最少200字，最多不超过1000字）</span>
+        <textarea placeholder="产品开发：生产策略、行业特点、竞争焦点。本公司技术、产品及服务的新颖性、先进性和独特性。"></textarea>
+      </div>
+    `);
+    const f = scanFields().find((x) => x.type === 'textarea');
+    expect(f).toBeTruthy();
+    // 主标题 only — no 副标题, no length parenthetical.
+    expect(f?.label).toBe('项目概要');
+    expect(f?.label).not.toContain('产品开发');
+    expect(f?.label).not.toContain('最少');
+    // 副标题 preserved as the placeholder (rendered gray in the sidepanel).
+    expect(f?.constraints.placeholder).toContain('产品开发');
+    // Both limits are hard generation constraints.
+    expect(f?.constraints.minLength).toBe(200);
+    expect(f?.constraints.maxLength).toBe(1000);
+  });
+
+  it('parses a max-only heading "项目阶段（最多不超过100字）"', () => {
+    setupDOM(`
+      <div class="form-row">
+        <span>* 项目阶段 （最多不超过100字）</span>
+        <input type="text" placeholder="早期PMF验证期" />
+      </div>
+    `);
+    const f = scanFields().find((x) => x.type === 'text');
+    expect(f?.label).toBe('项目阶段');
+    expect(f?.constraints.maxLength).toBe(100);
+    expect(f?.constraints.minLength).toBeUndefined();
+  });
+});
