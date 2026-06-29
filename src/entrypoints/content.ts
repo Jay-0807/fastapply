@@ -52,6 +52,18 @@ export default defineContentScript({
       let filledCount = 0;
       const failedFields: string[] = [];
       const meta = win.__applyforge_afid_meta__ ?? {};
+      // Re-apply data-af-id before filling. On reactive frameworks (Vue /
+      // Element-UI — 深创赛 dogfood 2026-06-29) the controls are re-rendered
+      // between scan and fill, which DROPS the externally-added data-af-id
+      // attributes → every `[data-af-id="af-N"]` selector resolves to null →
+      // every LLM-detected field "fails to fill". tagInteractiveControls is
+      // idempotent and numbers by DOM order, so on an unchanged structure it
+      // re-creates the SAME ids the selectors expect. BR13 (isAfIdConsistent
+      // below) still guards: if the structure DID shift so an id now points at
+      // a different control, the tag/label mismatch makes us skip it (fail-safe,
+      // never a mis-fill). Strictly additive — heuristic CSS-path fills are
+      // untouched, and a field that would already fail can only be recovered.
+      try { tagInteractiveControls(document); } catch { /* best-effort */ }
       for (const [selector, value] of Object.entries(map)) {
         // BR13: for an afId-based selector, verify the element still matches what we scanned.
         const afMatch = AF_ID_SELECTOR_RE.exec(selector);
