@@ -752,4 +752,41 @@ describe('field-scanner — 主标题 / 副标题 / 字数限制 (深创赛)', (
     expect(f?.constraints.maxLength).toBe(100);
     expect(f?.constraints.minLength).toBeUndefined();
   });
+
+  // 深创赛 真机 dogfood (2026-06-29, via Chrome MCP): Element UI + Bootstrap col
+  // grid nests the control 4–5 wrappers below its grid cell, with the label in a
+  // SIBLING cell (inline) or a PRECEDING row (full-width). findSiblingLabelCell's
+  // depth<4 stopped short → every input vanished / fell back to placeholder.
+  it('深创赛: Element-UI col grid — label cell is the field cell prev-sibling (deep nesting)', () => {
+    setupDOM(`
+      <div class="sc-main_form_group"><div class="row">
+        <div class="col-xs-5">*参赛项目名称</div>
+        <div class="col-xs-7 sc-main_form_field">
+          <div class="el-form-item is-required"><div class="el-form-item__content">
+            <div class="el-input"><input class="el-input__inner" type="text"></div>
+          </div></div>
+        </div>
+      </div></div>
+    `);
+    const f = scanFields().find((x) => x.type === 'text');
+    expect(f?.label).toBe('参赛项目名称');
+  });
+
+  it('深创赛: full-width textarea — label in a PRECEDING row + both char limits', () => {
+    setupDOM(`
+      <div class="sc-main_form_group">
+        <div class="row"><div class="col-xs-24">*项目概要（最少200字，最多不超过1000字）</div></div>
+        <div class="row"><div class="col-xs-24 sc-main_form_field">
+          <div class="el-form-item is-required"><div class="el-form-item__content">
+            <div class="el-textarea"><textarea placeholder="产品开发：生产策略、行业特点。"></textarea></div>
+          </div></div>
+        </div></div>
+      </div>
+    `);
+    const f = scanFields().find((x) => x.type === 'textarea');
+    expect(f?.label).toBe('项目概要');
+    expect(f?.constraints.minLength).toBe(200);
+    expect(f?.constraints.maxLength).toBe(1000);
+    expect(f?.constraints.placeholder).toContain('产品开发');
+  });
 });

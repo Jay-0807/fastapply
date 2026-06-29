@@ -1190,7 +1190,16 @@ function findSiblingLabelCell(el: HTMLElement): HTMLElement | null {
   // nearest colon-terminated cell over a nearer non-colon one — that's what lets
   // us skip the "选择" upload trigger and reach the real label cell behind it.
   let fallback: HTMLElement | null = null;
-  while (cur && cur !== document.body && depth < 4) {
+  // depth 6, not 4: component frameworks nest the control several wrappers below
+  // its grid cell — Element UI + Bootstrap col on 深创赛 is
+  // input → el-input → el-form-item__content → el-form-item → col-xs-7 (label is
+  // col-xs-5, the cell's prev-sibling, reached at depth 4), and full-width
+  // textareas put the label in a PRECEDING .row reached at depth 5. depth<4
+  // stopped one-to-two hops short, so every simple input vanished and the big
+  // textareas fell back to their placeholder. Nearest match still wins (fallback
+  // is set on the first/closest hit and never overwritten), so reaching farther
+  // only RECOVERS labels, it doesn't steal a closer one.
+  while (cur && cur !== document.body && depth < 6) {
     let sib = cur.previousElementSibling;
     while (sib) {
       const hasControl = sib.querySelector(
