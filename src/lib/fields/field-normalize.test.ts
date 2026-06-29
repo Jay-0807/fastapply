@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { extractMinLength, cleanDisplayLabel, readingOrder, type RectLike } from './field-normalize';
+import { extractMinLength, cleanDisplayLabel, readingOrder, composeGridLabels, type RectLike } from './field-normalize';
 
 describe('extractMinLength', () => {
   it('parses 最少/至少/不少于 forms', () => {
@@ -99,5 +99,42 @@ describe('readingOrder — visual top→bottom, left→right', () => {
     const r2textarea = R(150, 200, 300, 40);
     // input order scrambled on purpose
     expect(readingOrder([r1textarea, r2textarea, r1label, r2label])).toEqual([2, 0, 3, 1]);
+  });
+});
+
+describe('composeGridLabels — 财务预测 metric × year grid', () => {
+  // 深创赛: 营业收入/营业成本 each repeat across 3 year columns (515/728/942).
+  const headers = [
+    { text: '2026年', left: 505 },
+    { text: '2027年', left: 718 },
+    { text: '2028年', left: 932 },
+  ];
+  it('pairs each repeated-row cell with its column header', () => {
+    const cells = [
+      { label: '营业收入', left: 515 }, { label: '营业收入', left: 728 }, { label: '营业收入', left: 942 },
+      { label: '营业成本', left: 515 }, { label: '营业成本', left: 728 }, { label: '营业成本', left: 942 },
+    ];
+    expect(composeGridLabels(cells, headers)).toEqual([
+      '营业收入（2026年）', '营业收入（2027年）', '营业收入（2028年）',
+      '营业成本（2026年）', '营业成本（2027年）', '营业成本（2028年）',
+    ]);
+  });
+  it('leaves a non-repeated label untouched (not a grid row)', () => {
+    expect(composeGridLabels([{ label: '项目名称', left: 515 }], headers)).toEqual(['项目名称']);
+  });
+  it('leaves a label repeated at the SAME left untouched (a column, not a grid row needing headers)', () => {
+    expect(composeGridLabels([{ label: '姓名', left: 515 }, { label: '姓名', left: 515 }], headers))
+      .toEqual(['姓名', '姓名']);
+  });
+  it('keeps the label when no header aligns within tolerance', () => {
+    const cells = [{ label: '净利润', left: 515 }, { label: '净利润', left: 9999 }];
+    expect(composeGridLabels(cells, headers)).toEqual(['净利润（2026年）', '净利润']);
+  });
+  it('does NOT treat a long header-row string as a grid row (深创赛 诉讼表)', () => {
+    // The 诉讼 table's "label" is the whole header row — a long string that must
+    // not be composed (the real dogfood bug that mislabeled 营业收入 as 诉讼原因).
+    const long = '法律风险类型 诉讼原因 诉讼内容 操作';
+    const cells = [{ label: long, left: 301 }, { label: long, left: 515 }, { label: long, left: 764 }];
+    expect(composeGridLabels(cells, headers)).toEqual([long, long, long]);
   });
 });

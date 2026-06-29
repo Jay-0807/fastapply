@@ -105,6 +105,59 @@ export interface RectLike {
   height: number;
 }
 
+export interface GridCell {
+  label: string;
+  left: number;
+}
+export interface GridHeader {
+  text: string;
+  left: number;
+}
+
+/**
+ * Grid-aware label composition. Forms like 深创赛 财务预测 lay out a metric × year
+ * grid where the SAME row label (营业收入) repeats across N year columns, so 3
+ * cells all get labelled "营业收入" and the AI can't tell the years apart. A label
+ * shared by ≥2 cells at ≥2 DISTINCT lefts is a grid row; pair each such cell with
+ * the column header nearest its left → "营业收入（2026年）".
+ *
+ * Pure: caller supplies cell lefts + header {text,left} (from getBoundingClientRect
+ * on the real page). Returns one label per input cell, in order. A cell whose
+ * label isn't a repeated grid row, or that has no header within `tol`px, keeps its
+ * original label — so non-grid fields are never touched.
+ */
+/** A clean grid ROW label is short ("营业收入"). A long string is the column-header
+ *  row that the label-detector mistook for a label (深创赛 诉讼表) — never a grid row. */
+export const MAX_GRID_ROW_LABEL_LEN = 10;
+
+export function composeGridLabels(cells: readonly GridCell[], headers: readonly GridHeader[], tol = 60): string[] {
+  const byLabel = new Map<string, number[]>();
+  cells.forEach((c, i) => {
+    const a = byLabel.get(c.label) ?? [];
+    a.push(i);
+    byLabel.set(c.label, a);
+  });
+  const isGridRow = (label: string): boolean => {
+    if (label.length > MAX_GRID_ROW_LABEL_LEN) return false;
+    const idxs = byLabel.get(label);
+    if (!idxs || idxs.length < 2) return false;
+    return new Set(idxs.map((i) => cells[i]!.left)).size >= 2;
+  };
+  return cells.map((c) => {
+    if (!isGridRow(c.label)) return c.label;
+    let best: GridHeader | null = null;
+    let bestD = tol;
+    for (const h of headers) {
+      const d = Math.abs(h.left - c.left);
+      if (d <= bestD) {
+        bestD = d;
+        best = h;
+      }
+    }
+    return best ? `${c.label}（${best.text}）` : c.label;
+  });
+}
+
 /**
  * Visual reading order (top→bottom, then left→right within a row) for a list of
  * element rects. Returns the indices of `rects` in reading order, or **null**

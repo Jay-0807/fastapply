@@ -9,7 +9,7 @@
 // DetectedField[] back to the service worker via chrome.runtime messaging.
 
 import type { DetectedField, FieldType, FieldConstraints, DetectedFieldProvenance } from '@/lib/db/types';
-import { extractMinLength, cleanDisplayLabel, readingOrder } from './field-normalize';
+import { extractMinLength, cleanDisplayLabel, readingOrder, composeGridLabels, MAX_GRID_ROW_LABEL_LEN } from './field-normalize';
 
 /**
  * URLs that are known form-editor / admin pages where every scan would return
@@ -350,17 +350,81 @@ export function scanFields(root: Document | ShadowRoot = document): DetectedFiel
     });
   }
   const ordered = order.map((i) => fields[i]!);
+  const orderedEls = order.map((i) => fieldEls[i]!);
 
   // G4 (2026-06-06): collapse duplicate file inputs that resolve to the SAME
   // label — multi-slot uploaders expose several hidden <input type=file> for one
   // logical field (HiCool 商业计划书 exposed upfile-1/2/3). Keep the first.
   const seenFileLabels = new Set<string>();
-  return ordered.filter((f) => {
-    if (f.type !== 'file') return true;
-    if (seenFileLabels.has(f.label)) return false;
-    seenFileLabels.add(f.label);
-    return true;
+  const keepIdx: number[] = [];
+  ordered.forEach((f, k) => {
+    if (f.type === 'file') {
+      if (seenFileLabels.has(f.label)) return;
+      seenFileLabels.add(f.label);
+    }
+    keepIdx.push(k);
   });
+  const finalFields = keepIdx.map((k) => ordered[k]!);
+  // Grid-aware labels: 财务预测 / 诉讼 grids repeat a row label across columns
+  // ("营业收入" ×3 years). Compose each with its column header → "营业收入（2026年）"
+  // so the AI can tell them apart and fill distinct values. Mutates labels only;
+  // no field is added or removed. Layout-guarded (skipped without rects).
+  applyGridLabels(finalFields, keepIdx.map((k) => orderedEls[k]!));
+  return finalFields;
+}
+
+/**
+ * Pair each grid cell whose row label repeats across columns with its column
+ * header (deep嵌套 col grid; 深创赛 财务预测 = metric × year). Reads geometry
+ * (getBoundingClientRect) to align cells to a header row sitting just above the
+ * grid. No-op when there's no layout (happy-dom tests) or no header aligns, so
+ * non-grid forms and the fixtures are untouched. Pure logic in composeGridLabels.
+ */
+function applyGridLabels(fields: DetectedField[], els: (Element | null)[]): void {
+  const rects = els.map((e) => e?.getBoundingClientRect?.() ?? null);
+  if (!rects.some((r) => r && (r.width > 0 || r.height > 0))) return; // no layout → skip
+
+  const cells = fields.map((f, i) => ({ label: f.label, left: rects[i]?.left ?? 0 }));
+  // Which labels are grid rows (repeat at ≥2 distinct lefts)? Only bother finding
+  // headers if at least one exists — keeps the cost off normal forms.
+  const byLabel = new Map<string, number[]>();
+  cells.forEach((c, i) => { const a = byLabel.get(c.label) ?? []; a.push(i); byLabel.set(c.label, a); });
+  // Same guard as composeGridLabels: a long label is a mis-detected header row,
+  // not a grid row — excluding it also keeps gridTop on the real grid (so the
+  // 财务 cells don't borrow the 诉讼 table's header band far above them).
+  const gridIdx = [...byLabel.values()].filter((idxs) =>
+    idxs.length >= 2 && cells[idxs[0]!]!.label.length <= MAX_GRID_ROW_LABEL_LEN && new Set(idxs.map((i) => cells[i]!.left)).size >= 2,
+  ).flat();
+  if (gridIdx.length === 0) return;
+
+  // The header row sits just above the topmost grid cell; its cells align (by
+  // left) with the columns. Collect short-text, control-free elements in that band.
+  const gridTop = Math.min(...gridIdx.map((i) => rects[i]!.top));
+  const columnLefts = [...new Set(gridIdx.map((i) => Math.round(rects[i]!.left)))];
+  const doc = els[gridIdx[0]!]?.ownerDocument;
+  const headers: { text: string; left: number }[] = [];
+  if (doc) {
+    const candidates = Array.from(doc.querySelectorAll('div, th, td, span, label, p')).filter((el) => {
+      if (el.querySelector('input, textarea, select')) return false;
+      const t = cleanText(el.textContent || '');
+      if (!t || t.length > 12) return false;
+      const r = el.getBoundingClientRect();
+      return r.width > 0 && r.top < gridTop && r.top > gridTop - 80;
+    });
+    for (const left of columnLefts) {
+      let best: Element | null = null;
+      let bestD = 60;
+      for (const el of candidates) {
+        const d = Math.abs(el.getBoundingClientRect().left - left);
+        if (d < bestD) { bestD = d; best = el; }
+      }
+      if (best) headers.push({ text: cleanText(best.textContent || ''), left });
+    }
+  }
+  if (headers.length === 0) return;
+
+  const composed = composeGridLabels(cells, headers);
+  fields.forEach((f, i) => { f.label = composed[i]!; });
 }
 
 /**
